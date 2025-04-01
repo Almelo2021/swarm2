@@ -141,9 +141,24 @@ async def get_website_visits(domain: str) -> str:
     url = f"https://app.rebounds.ai/api/agent/visits?domain={domain}"
     
     try:
-        response = requests.get(url)
+        # Make sure domain is formatted correctly
+        if not domain.startswith("http") and "." not in domain:
+            domain = f"{domain}.com"  # Add default TLD if missing
+        
+        # Make sure the domain is properly formatted
+        if not domain.startswith("http"):
+            domain = domain.split("//")[-1]  # Remove protocol if present
+        
+        url = f"https://app.rebounds.ai/api/agent/visits?domain={domain}"
+        
+        # Add timeout to prevent hanging
+        response = requests.get(url, timeout=5)
         response.raise_for_status()
         visits = response.json()
+        
+        # Check if response is empty
+        if not visits:
+            return json.dumps({"message": "No website visits found for this domain"})
         
         # Format the response to highlight important information
         result = {
@@ -179,9 +194,16 @@ async def get_website_visits(domain: str) -> str:
         
         return json.dumps(result, indent=2)
     
+    except requests.exceptions.Timeout:
+        return json.dumps({"error": "Request timed out when accessing website visits API"})
+    except requests.exceptions.RequestException as e:
+        return json.dumps({"error": f"Error accessing website visits API: {str(e)}"})
+    except ValueError as e:
+        return json.dumps({"error": f"Error parsing response from website visits API: {str(e)}"})
     except Exception as e:
-        return f"Error fetching website visits: {str(e)}"
-
+        return json.dumps({"error": f"Unexpected error fetching website visits: {str(e)}"})
+    
+    
 @function_tool
 async def get_crm_activities(domain: str) -> str:
     """Get logged CRM activities for contacts from a specific company domain.
