@@ -114,15 +114,24 @@ async def root():
 @app.post("/api")
 async def process_query(request: QueryRequest):
     if not agent_initialized:
-        return {"error": "Agent not properly initialized. Check server logs for details."}
+        return {"error": "OpenAI Agents SDK not properly initialized. Check server logs for details."}
     
     try:
         formatted_query = f"Company: {request.company} Query: {request.query}"
+        print(f"Processing query: {formatted_query}")
+        
+        # If query is about website visits, log extra info
+        if "visit" in request.query.lower() or "website" in request.query.lower():
+            print(f"Query about website visits detected for domain: {request.company}")
+        
         result = await Runner.run(agent, formatted_query)
+        print(f"Query completed successfully")
         return {"result": result.final_output}
     except Exception as e:
         error_msg = f"Error processing query: {str(e)}"
-        print(error_msg)  # Log the error
+        print(f"ERROR: {error_msg}")
+        import traceback
+        traceback.print_exc()
         return {"error": error_msg}
 
 # Add a health check endpoint
