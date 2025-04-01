@@ -8,29 +8,43 @@ from pathlib import Path
 # Add parent directory to path so we can import our modules
 sys.path.append(str(Path(__file__).parent.parent))
 
-try:
-    from tools import (
-        get_existing_leads,
-        search_hubspot_contacts,
-        get_website_visits,
-        get_crm_activities
-    )
-    from agents import Agent, WebSearchTool, Runner
-    
-    # Create the agent
-    agent = Agent(
-        name="Assistant",
-        tools=[
-            WebSearchTool(),
+# Import error handling wrapper
+def import_agent_components():
+    try:
+        # Try to import from specific module paths
+        from agents import Agent, WebSearchTool, Runner
+        
+        from tools import (
             get_existing_leads,
             search_hubspot_contacts,
             get_website_visits,
             get_crm_activities
-        ],
-    )
-except ImportError as e:
-    print(f"Warning: Some imports failed - {str(e)}")
-    # We'll still allow the app to start for basic functionality
+        )
+        
+        # Create the agent
+        agent = Agent(
+            name="Assistant",
+            tools=[
+                WebSearchTool(),
+                get_existing_leads,
+                search_hubspot_contacts,
+                get_website_visits,
+                get_crm_activities
+            ],
+        )
+        
+        return agent, Runner
+    except ImportError as e:
+        print(f"Error importing agent components: {str(e)}")
+        raise e
+
+# Try to import agent components
+try:
+    agent, Runner = import_agent_components()
+    agent_initialized = True
+except Exception as e:
+    print(f"Failed to initialize agent: {str(e)}")
+    agent_initialized = False
 
 app = FastAPI()
 
@@ -99,25 +113,26 @@ async def root():
 
 @app.post("/api")
 async def process_query(request: QueryRequest):
+    if not agent_initialized:
+        return {"error": "Agent not properly initialized. Check server logs for details."}
+    
     try:
         formatted_query = f"Company: {request.company} Query: {request.query}"
         result = await Runner.run(agent, formatted_query)
         return {"result": result.final_output}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
+        error_msg = f"Error processing query: {str(e)}"
+        print(error_msg)  # Log the error
+        return {"error": error_msg}
 
 # Add a health check endpoint
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "message": "API is running"}
-
-# Error handling
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    return JSONResponse(
-        status_code=500,
-        content={"message": f"An error occurred: {str(e)}"}
-    )
+    return {
+        "status": "ok", 
+        "message": "API is running",
+        "agent_initialized": agent_initialized
+    }
 
 # For local development
 if __name__ == "__main__":
