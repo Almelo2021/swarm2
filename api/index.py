@@ -71,7 +71,7 @@ async def root():
     <!DOCTYPE html>
     <html>
         <head>
-            <title>Sales Intelligence Agent API</title>
+            <title>Sales Intelligence Agent API Sven</title>
             <style>
                 body {
                     font-family: Arial, sans-serif;
