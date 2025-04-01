@@ -1,77 +1,65 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 import sys
 import os
-import json
-import requests
-import asyncio
-from typing import List, Optional, Dict, Any
+from pathlib import Path
+
+# Add parent directory to path so we can import our modules
+sys.path.append(str(Path(__file__).parent.parent))
+
+# Import error handling wrapper
+def import_agent_components():
+    try:
+        # Try to import from specific module paths
+        from agents import Agent, WebSearchTool, Runner
+        
+        from tools import (
+            get_existing_leads,
+            search_hubspot_contacts,
+            get_website_visits,
+            get_crm_activities
+        )
+        
+        # Create the agent
+        agent = Agent(
+            name="Assistant",
+            tools=[
+                WebSearchTool(),
+                get_existing_leads,
+                search_hubspot_contacts,
+                get_website_visits,
+                get_crm_activities
+            ],
+        )
+        
+        return agent, Runner
+    except ImportError as e:
+        print(f"Error importing agent components: {str(e)}")
+        raise e
+
+# Try to import agent components
+try:
+    agent, Runner = import_agent_components()
+    agent_initialized = True
+except Exception as e:
+    print(f"Failed to initialize agent: {str(e)}")
+    agent_initialized = False
 
 app = FastAPI()
-
-# Since we don't have the agents module, let's implement a simple agent directly
-class SimpleAgent:
-    def __init__(self, name: str, tools: List[Any] = None):
-        self.name = name
-        self.tools = tools or []
-        self.openai_api_key = os.environ.get("OPENAI_API_KEY")
-    
-    async def run(self, query: str) -> str:
-        """Simple implementation to call tools based on the query"""
-        result = f"Processing query: {query}"
-        
-        # Parse company from query format
-        company = None
-        if query.startswith("Company:"):
-            parts = query.split("Query:")
-            if len(parts) == 2:
-                company = parts[0].replace("Company:", "").strip()
-                question = parts[1].strip()
-                result += f"\n\nCompany: {company}\nQuestion: {question}"
-                
-                # Call the relevant tools based on the question
-                if "email" in question.lower():
-                    result += "\n\nChecking Hubspot contacts..."
-                    hubspot_data = await search_hubspot_contacts(company=company)
-                    result += f"\n\nHubspot data: {hubspot_data}"
-                
-                if "lead" in question.lower() or "people" in question.lower():
-                    result += "\n\nChecking existing leads..."
-                    leads_data = await get_existing_leads(company=company)
-                    result += f"\n\nLeads data: {leads_data}"
-                
-                if "visit" in question.lower() or "website" in question.lower():
-                    domain = company if "." in company else f"{company}.com"
-                    result += "\n\nChecking website visits..."
-                    visits_data = await get_website_visits(domain=domain)
-                    result += f"\n\nWebsite visits: {visits_data}"
-                
-                if "crm" in question.lower() or "activit" in question.lower():
-                    domain = company if "." in company else f"{company}.com"
-                    result += "\n\nChecking CRM activities..."
-                    crm_data = await get_crm_activities(domain=domain)
-                    result += f"\n\nCRM activities: {crm_data}"
-        
-        return result
-
-# Import tool functions from tools.py
-from tools import get_existing_leads, search_hubspot_contacts, get_website_visits, get_crm_activities
-
-# Create a simple agent
-agent = SimpleAgent(name="Assistant")
 
 class QueryRequest(BaseModel):
     company: str
     query: str
 
+# Main route with HTML response
 @app.get("/", response_class=HTMLResponse)
 async def root():
     html_content = """
     <!DOCTYPE html>
     <html>
         <head>
-            <title>Sales Intelligence Agent API Sven</title>
+            <title>Sales Intelligence Agent API</title>
             <style>
                 body {
                     font-family: Arial, sans-serif;
@@ -125,10 +113,13 @@ async def root():
 
 @app.post("/api")
 async def process_query(request: QueryRequest):
+    if not agent_initialized:
+        return {"error": "Agent not properly initialized. Check server logs for details."}
+    
     try:
         formatted_query = f"Company: {request.company} Query: {request.query}"
-        result = await agent.run(formatted_query)
-        return {"result": result}
+        result = await Runner.run(agent, formatted_query)
+        return {"result": result.final_output}
     except Exception as e:
         error_msg = f"Error processing query: {str(e)}"
         print(error_msg)  # Log the error
@@ -140,6 +131,10 @@ async def health_check():
     return {
         "status": "ok", 
         "message": "API is running",
-        "tools_available": ["get_existing_leads", "search_hubspot_contacts", 
-                           "get_website_visits", "get_crm_activities"]
+        "agent_initialized": agent_initialized
     }
+
+# For local development
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
