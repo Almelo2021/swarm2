@@ -138,27 +138,23 @@ async def get_website_visits(domain: str) -> str:
     Args:
         domain: Company domain to check for website visits
     """
+    print(f"[DEBUG] get_website_visits called with domain: {domain}")
     url = f"https://app.rebounds.ai/api/agent/visits?domain={domain}"
+    print(f"[DEBUG] Making request to URL: {url}")
     
     try:
-        # Make sure domain is formatted correctly
-        if not domain.startswith("http") and "." not in domain:
-            domain = f"{domain}.com"  # Add default TLD if missing
-        
-        # Make sure the domain is properly formatted
-        if not domain.startswith("http"):
-            domain = domain.split("//")[-1]  # Remove protocol if present
-        
-        url = f"https://app.rebounds.ai/api/agent/visits?domain={domain}"
-        
-        # Add timeout to prevent hanging
-        response = requests.get(url, timeout=5)
+        response = requests.get(url, timeout=10)
+        print(f"[DEBUG] Response status code: {response.status_code}")
         response.raise_for_status()
-        visits = response.json()
         
-        # Check if response is empty
-        if not visits:
-            return json.dumps({"message": "No website visits found for this domain"})
+        visits = response.json()
+        print(f"[DEBUG] Received {len(visits)} visits")
+        
+        # Print first visit for debugging if available
+        if visits and len(visits) > 0:
+            print(f"[DEBUG] First visit: {visits[0]}")
+        else:
+            print("[DEBUG] No visits found in response")
         
         # Format the response to highlight important information
         result = {
@@ -166,8 +162,6 @@ async def get_website_visits(domain: str) -> str:
             "company_info": {},
             "visits": []
         }
-
-        print(visits[0])
         
         # Extract company info from the first visit if available
         if visits:
@@ -194,17 +188,23 @@ async def get_website_visits(domain: str) -> str:
                 "session_id": visit.get("sessionId")
             })
         
+        print(f"[DEBUG] Returning formatted result with {len(result['visits'])} visits")
         return json.dumps(result, indent=2)
     
     except requests.exceptions.Timeout:
+        print("[DEBUG] Request timed out")
         return json.dumps({"error": "Request timed out when accessing website visits API"})
     except requests.exceptions.RequestException as e:
+        print(f"[DEBUG] Request exception: {str(e)}")
         return json.dumps({"error": f"Error accessing website visits API: {str(e)}"})
     except ValueError as e:
+        print(f"[DEBUG] Value error (likely JSON parsing): {str(e)}")
         return json.dumps({"error": f"Error parsing response from website visits API: {str(e)}"})
     except Exception as e:
-        return json.dumps({"error": f"Unexpected error fetching website visits: {str(e)}"})
-    
+        print(f"[DEBUG] Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return json.dumps({"error": f"Unexpected error fetching website visits: {str(e)}"})    
 
 @function_tool
 async def get_crm_activities(domain: str) -> str:
