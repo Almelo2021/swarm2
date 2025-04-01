@@ -143,7 +143,7 @@ async def get_website_visits(domain: str) -> str:
     print(f"[DEBUG] Making request to URL: {url}")
     
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=100)
         print(f"[DEBUG] Response status code: {response.status_code}")
         response.raise_for_status()
         
