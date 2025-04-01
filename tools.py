@@ -166,6 +166,8 @@ async def get_website_visits(domain: str) -> str:
             "company_info": {},
             "visits": []
         }
+
+        print(visits[0])
         
         # Extract company info from the first visit if available
         if visits:
@@ -203,7 +205,7 @@ async def get_website_visits(domain: str) -> str:
     except Exception as e:
         return json.dumps({"error": f"Unexpected error fetching website visits: {str(e)}"})
     
-    
+
 @function_tool
 async def get_crm_activities(domain: str) -> str:
     """Get logged CRM activities for contacts from a specific company domain.
