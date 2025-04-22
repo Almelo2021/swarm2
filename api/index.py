@@ -24,7 +24,7 @@ def import_agent_components():
         # Create the agent
         agent = Agent(
             name="Assistant",
-            model="gpt-4.1"
+            model="gpt-4.1",
             tools=[
                 WebSearchTool(),
                 get_existing_leads,
