@@ -21,26 +21,37 @@ def import_agent_components():
             get_crm_activities
         )
         
-        # Create the agent
-        agent = Agent(
-            name="Assistant",
-            tools=[
-                WebSearchTool(),
-                get_existing_leads,
-                search_hubspot_contacts,
-                get_website_visits,
-                get_crm_activities
-            ],
+        # Create a list of non-web search tools
+        standard_tools = [
+            get_existing_leads,
+            search_hubspot_contacts,
+            get_website_visits,
+            get_crm_activities
+        ]
+        
+        # Create the web search tool separately
+        web_search_tool = WebSearchTool()
+        
+        # Create two agents - one with web search and one without
+        standard_agent = Agent(
+            name="StandardAssistant",
+            tools=standard_tools,
+            model="o4-mini"  # Use o4-mini for standard operations
         )
         
-        return agent, Runner
+        web_search_agent = Agent(
+            name="WebSearchAssistant",
+            tools=[web_search_tool, *standard_tools]
+        )
+        
+        return standard_agent, web_search_agent, Runner
     except ImportError as e:
         print(f"Error importing agent components: {str(e)}")
         raise e
 
 # Try to import agent components
 try:
-    agent, Runner = import_agent_components()
+    standard_agent, web_search_agent, Runner = import_agent_components()
     agent_initialized = True
 except Exception as e:
     print(f"Failed to initialize agent: {str(e)}")
@@ -117,14 +128,27 @@ async def process_query(request: QueryRequest):
         return {"error": "OpenAI Agents SDK not properly initialized. Check server logs for details."}
     
     try:
-        formatted_query = f"Company: {request.company} Query: {request.query} -- Be as thorough as possible. Do not refrain from using tools or web search."
+        formatted_query = f"Company: {request.company} Query: {request.query} -- Be as thorough as possible."
         print(f"Processing query: {formatted_query}")
+        
+        # Determine which agent to use based on query content
+        requires_web_search = any(term in request.query.lower() for term in [
+            "search", "find", "lookup", "research", "web", "internet", "online"
+        ])
+        
+        # Log the agent selection
+        if requires_web_search:
+            print(f"Query requires web search, using full o4 model.")
+            selected_agent = web_search_agent
+        else:
+            print(f"Query does not require web search, using o4-mini model.")
+            selected_agent = standard_agent
         
         # If query is about website visits, log extra info
         if "visit" in request.query.lower() or "website" in request.query.lower():
             print(f"Query about website visits detected for domain: {request.company}")
         
-        result = await Runner.run(agent, formatted_query)
+        result = await Runner.run(selected_agent, formatted_query)
         print(f"Query completed successfully")
         return {"result": result.final_output}
     except Exception as e:
@@ -140,7 +164,11 @@ async def health_check():
     return {
         "status": "ok", 
         "message": "API is running",
-        "agent_initialized": agent_initialized
+        "agent_initialized": agent_initialized,
+        "models": {
+            "standard": "o4-mini",
+            "web_search": "o4"
+        }
     }
 
 # For local development
