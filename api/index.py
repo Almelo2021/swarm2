@@ -24,7 +24,6 @@ def import_agent_components():
         # Create the agent
         agent = Agent(
             name="Assistant",
-            model="o3",  # Using the o4-mini model
             tools=[
                 WebSearchTool(),
                 get_existing_leads,
@@ -118,7 +117,7 @@ async def process_query(request: QueryRequest):
         return {"error": "OpenAI Agents SDK not properly initialized. Check server logs for details."}
     
     try:
-        formatted_query = f"Company: {request.company} Query: {request.query}"
+        formatted_query = f"Company: {request.company} Query: {request.query} -- Be as thorough as possible. Do not refrain from using tools or web search."
         print(f"Processing query: {formatted_query}")
         
         # If query is about website visits, log extra info
