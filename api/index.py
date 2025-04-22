@@ -3,7 +3,6 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 import sys
 import os
-import asyncio
 from pathlib import Path
 
 # Add parent directory to path so we can import our modules
@@ -12,8 +11,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 # Import error handling wrapper
 def import_agent_components():
     try:
-        # Import necessary components
-        from agents import Agent, WebSearchTool, Runner, trace
+        # Try to import from specific module paths
+        from agents import Agent, WebSearchTool, Runner
         
         from tools import (
             get_existing_leads,
@@ -22,94 +21,27 @@ def import_agent_components():
             get_crm_activities
         )
         
-        # Create specialized agents for different tasks
-        
-        # 1. Web search agent with full model support
-        web_search_agent = Agent(
-            name="web_search_agent",
-            instructions="You perform web searches to find information relevant to the query about the specified company.",
-            tools=[WebSearchTool()]
-        )
-        
-        # 2. CRM data agent (using o4-mini)
-        crm_agent = Agent(
-            name="crm_agent",
-            instructions="You analyze CRM data for the specified company to extract relevant insights.",
+        # Create the agent
+        agent = Agent(
+            name="Assistant",
+            model="gpt-4.1"
             tools=[
+                WebSearchTool(),
+                get_existing_leads,
                 search_hubspot_contacts,
+                get_website_visits,
                 get_crm_activities
             ],
-            model="o4-mini"
         )
         
-        # 3. Lead finder agent (using o4-mini)
-        leads_agent = Agent(
-            name="leads_agent",
-            instructions="You find leads at the specified company and analyze their relevance.",
-            tools=[get_existing_leads],
-            model="o4-mini"
-        )
-        
-        # 4. Website analytics agent (using o4-mini)
-        website_agent = Agent(
-            name="website_agent",
-            instructions="You analyze website visit data for the specified company.",
-            tools=[get_website_visits],
-            model="o4-mini"
-        )
-        
-        # 5. Main orchestrator agent that uses all specialized agents as tools
-        orchestrator_agent = Agent(
-            name="orchestrator_agent",
-            instructions=(
-                "You are a sales intelligence assistant that helps analyze companies. "
-                "Based on the query, determine which specialized tools to use. "
-                "For questions requiring internet information, use the web search tool. "
-                "For questions about CRM data, use the CRM tools. "
-                "For questions about leads at a company, use the leads finder tool. "
-                "For questions about website visits, use the website analytics tool. "
-                "Always be thorough and provide comprehensive answers."
-            ),
-            tools=[
-                web_search_agent.as_tool(
-                    tool_name="web_search",
-                    tool_description="Search the web for information about the company"
-                ),
-                crm_agent.as_tool(
-                    tool_name="analyze_crm_data",
-                    tool_description="Analyze CRM data for the company"
-                ),
-                leads_agent.as_tool(
-                    tool_name="find_company_leads",
-                    tool_description="Find leads at the specified company"
-                ),
-                website_agent.as_tool(
-                    tool_name="analyze_website_visits",
-                    tool_description="Analyze website visit data for the company"
-                )
-            ],
-            model="o4-mini"  # Orchestrator uses o4-mini for efficiency
-        )
-        
-        # 6. Synthesizer agent to ensure high-quality final responses
-        synthesizer_agent = Agent(
-            name="synthesizer_agent",
-            instructions=(
-                "You review and synthesize information from various sources to create a "
-                "comprehensive, well-structured response. Ensure the final answer directly "
-                "addresses the original query and presents information in a clear, concise manner."
-            ),
-            model="o4-mini"
-        )
-        
-        return orchestrator_agent, synthesizer_agent, Runner
+        return agent, Runner
     except ImportError as e:
         print(f"Error importing agent components: {str(e)}")
         raise e
 
 # Try to import agent components
 try:
-    orchestrator_agent, synthesizer_agent, Runner = import_agent_components()
+    agent, Runner = import_agent_components()
     agent_initialized = True
 except Exception as e:
     print(f"Failed to initialize agent: {str(e)}")
@@ -186,24 +118,16 @@ async def process_query(request: QueryRequest):
         return {"error": "OpenAI Agents SDK not properly initialized. Check server logs for details."}
     
     try:
-        formatted_query = f"Company: {request.company} Query: {request.query} -- Be as thorough as possible."
+        formatted_query = f"Company: {request.company} Query: {request.query}"
         print(f"Processing query: {formatted_query}")
         
-        # Run the entire process in a trace for better debugging
-        from agents import trace
-        with trace("Sales Intelligence Query"):
-            # First, use the orchestrator to determine which specialized agents to use
-            orchestrator_result = await Runner.run(orchestrator_agent, formatted_query)
-            print(f"Orchestrator step completed")
-            
-            # Then use the synthesizer to create the final response
-            synthesizer_result = await Runner.run(
-                synthesizer_agent, orchestrator_result.to_input_list()
-            )
-            print(f"Synthesizer step completed")
-            
+        # If query is about website visits, log extra info
+        if "visit" in request.query.lower() or "website" in request.query.lower():
+            print(f"Query about website visits detected for domain: {request.company}")
+        
+        result = await Runner.run(agent, formatted_query)
         print(f"Query completed successfully")
-        return {"result": synthesizer_result.final_output}
+        return {"result": result.final_output}
     except Exception as e:
         error_msg = f"Error processing query: {str(e)}"
         print(f"ERROR: {error_msg}")
@@ -217,10 +141,7 @@ async def health_check():
     return {
         "status": "ok", 
         "message": "API is running",
-        "agent_initialized": agent_initialized,
-        "orchestration": "agents-as-tools",
-        "primary_model": "o4-mini",
-        "web_search_model": "o4"
+        "agent_initialized": agent_initialized
     }
 
 # For local development
