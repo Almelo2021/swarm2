@@ -24,6 +24,7 @@ def import_agent_components():
         # Create the agent
         agent = Agent(
             name="Assistant",
+            model="o4-mini",  # Using the o4-mini model
             tools=[
                 WebSearchTool(),
                 get_existing_leads,
