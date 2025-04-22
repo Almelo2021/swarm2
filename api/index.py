@@ -28,8 +28,7 @@ def import_agent_components():
         web_search_agent = Agent(
             name="web_search_agent",
             instructions="You perform web searches to find information relevant to the query about the specified company.",
-            tools=[WebSearchTool()],
-            model="o4"  # Use full model for web search
+            tools=[WebSearchTool()]
         )
         
         # 2. CRM data agent (using o4-mini)
