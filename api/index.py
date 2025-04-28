@@ -39,13 +39,8 @@ def import_agent_components():
         print(f"Error importing agent components: {str(e)}")
         raise e
 
-
-try:
-    from agents.tracing.exporters import APIExporter
-    tracing_available = True
-except ImportError:
-    print("Warning: Tracing exporters not available")
-    tracing_available = False
+# Import tracing components
+from agents.tracing import trace, force_flush, custom_span
 
 # Try to import agent components
 try:
@@ -56,20 +51,6 @@ except Exception as e:
     agent_initialized = False
 
 app = FastAPI()
-
-# Set up tracing if agent is initialized
-if agent_initialized and tracing_available:
-    try:
-        # Get API key from environment
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if api_key:
-            set_tracing_export_api_key(api_key)
-            add_trace_processor(APIExporter())
-            print("Tracing initialized successfully")
-        else:
-            print("No OpenAI API key found for tracing")
-    except Exception as e:
-        print(f"Failed to initialize tracing: {str(e)}")
 
 class QueryRequest(BaseModel):
     company: str
@@ -146,10 +127,9 @@ async def process_query(request: QueryRequest):
             formatted_query = f"Company: {request.company} Query: {request.query}"
             print(f"Processing query: {formatted_query}")
             
-            # If query is about website visits, add a custom span for tracking
+            # If query is about website visits, use a custom span to track it
             if "visit" in request.query.lower() or "website" in request.query.lower():
-                with custom_span(name="website_visits_query", 
-                                data={"domain": request.company}) as visit_span:
+                with custom_span("website_visit_query", data={"domain": request.company}):
                     print(f"Query about website visits detected for domain: {request.company}")
                     result = await Runner.run(agent, formatted_query)
             else:
@@ -157,7 +137,7 @@ async def process_query(request: QueryRequest):
             
             print(f"Query completed successfully")
             
-            # Explicitly flush traces to ensure they're sent to the backend
+            # Make sure to force flush traces
             try:
                 force_flush()
             except Exception as e:
@@ -173,8 +153,8 @@ async def process_query(request: QueryRequest):
             # Try to flush traces even on error
             try:
                 force_flush()
-            except:
-                pass
+            except Exception as flush_error:
+                print(f"Warning: Failed to flush traces on error: {str(flush_error)}")
                 
             return {"error": error_msg}
 
@@ -184,14 +164,13 @@ async def health_check():
     return {
         "status": "ok", 
         "message": "API is running",
-        "agent_initialized": agent_initialized,
-        "tracing_available": tracing_available
+        "agent_initialized": agent_initialized
     }
 
 # Add shutdown event handler to flush any pending traces
 @app.on_event("shutdown")
 def shutdown_event():
-    if agent_initialized and tracing_available:
+    if agent_initialized:
         try:
             print("Flushing any pending traces on shutdown...")
             force_flush()
