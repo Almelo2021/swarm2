@@ -39,11 +39,7 @@ def import_agent_components():
         print(f"Error importing agent components: {str(e)}")
         raise e
 
-# Import tracing components
-from agents.tracing import (
-    add_trace_processor, set_tracing_export_api_key, 
-    trace, force_flush, custom_span
-)
+
 try:
     from agents.tracing.exporters import APIExporter
     tracing_available = True
