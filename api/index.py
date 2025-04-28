@@ -40,7 +40,7 @@ def import_agent_components():
         raise e
 
 # Import tracing components
-from agents.tracing import trace, force_flush, custom_span
+from agents.tracing import trace, custom_span
 
 # Try to import agent components
 try:
@@ -121,8 +121,8 @@ async def process_query(request: QueryRequest):
         return {"error": "OpenAI Agents SDK not properly initialized. Check server logs for details."}
     
     # Create a trace for this API call
-    with trace(workflow_name="sales_intelligence", 
-               metadata={"company": request.company, "query": request.query}) as current_trace:
+    # Note: Removing the metadata parameter if it causes issues
+    with trace(workflow_name="sales_intelligence") as current_trace:
         try:
             formatted_query = f"Company: {request.company} Query: {request.query}"
             print(f"Processing query: {formatted_query}")
@@ -137,25 +137,13 @@ async def process_query(request: QueryRequest):
             
             print(f"Query completed successfully")
             
-            # Make sure to force flush traces
-            try:
-                force_flush()
-            except Exception as e:
-                print(f"Warning: Failed to flush traces: {str(e)}")
-                
+            # We'll skip the force_flush call since it's not directly available
             return {"result": result.final_output}
         except Exception as e:
             error_msg = f"Error processing query: {str(e)}"
             print(f"ERROR: {error_msg}")
             import traceback
             traceback.print_exc()
-            
-            # Try to flush traces even on error
-            try:
-                force_flush()
-            except Exception as flush_error:
-                print(f"Warning: Failed to flush traces on error: {str(flush_error)}")
-                
             return {"error": error_msg}
 
 # Add a health check endpoint
@@ -166,17 +154,6 @@ async def health_check():
         "message": "API is running",
         "agent_initialized": agent_initialized
     }
-
-# Add shutdown event handler to flush any pending traces
-@app.on_event("shutdown")
-def shutdown_event():
-    if agent_initialized:
-        try:
-            print("Flushing any pending traces on shutdown...")
-            force_flush()
-            print("Trace flush complete")
-        except Exception as e:
-            print(f"Warning: Failed to flush traces on shutdown: {str(e)}")
 
 # For local development
 if __name__ == "__main__":
