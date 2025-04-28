@@ -39,9 +39,6 @@ def import_agent_components():
         print(f"Error importing agent components: {str(e)}")
         raise e
 
-# Import tracing components
-from agents.tracing import trace, custom_span
-
 # Try to import agent components
 try:
     agent, Runner = import_agent_components()
@@ -120,31 +117,23 @@ async def process_query(request: QueryRequest):
     if not agent_initialized:
         return {"error": "OpenAI Agents SDK not properly initialized. Check server logs for details."}
     
-    # Create a trace for this API call
-    # Note: Removing the metadata parameter if it causes issues
-    with trace(workflow_name="sales_intelligence") as current_trace:
-        try:
-            formatted_query = f"Company: {request.company} Query: {request.query}"
-            print(f"Processing query: {formatted_query}")
-            
-            # If query is about website visits, use a custom span to track it
-            if "visit" in request.query.lower() or "website" in request.query.lower():
-                with custom_span("website_visit_query", data={"domain": request.company}):
-                    print(f"Query about website visits detected for domain: {request.company}")
-                    result = await Runner.run(agent, formatted_query)
-            else:
-                result = await Runner.run(agent, formatted_query)
-            
-            print(f"Query completed successfully")
-            
-            # We'll skip the force_flush call since it's not directly available
-            return {"result": result.final_output}
-        except Exception as e:
-            error_msg = f"Error processing query: {str(e)}"
-            print(f"ERROR: {error_msg}")
-            import traceback
-            traceback.print_exc()
-            return {"error": error_msg}
+    try:
+        formatted_query = f"Company: {request.company} Query: {request.query}"
+        print(f"Processing query: {formatted_query}")
+        
+        # If query is about website visits, log extra info
+        if "visit" in request.query.lower() or "website" in request.query.lower():
+            print(f"Query about website visits detected for domain: {request.company}")
+        
+        result = await Runner.run(agent, formatted_query)
+        print(f"Query completed successfully")
+        return {"result": result.final_output}
+    except Exception as e:
+        error_msg = f"Error processing query: {str(e)}"
+        print(f"ERROR: {error_msg}")
+        import traceback
+        traceback.print_exc()
+        return {"error": error_msg}
 
 # Add a health check endpoint
 @app.get("/api/health")
