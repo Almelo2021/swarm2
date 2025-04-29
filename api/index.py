@@ -203,59 +203,94 @@ async def check_company_status(company: str) -> Dict[str, Any]:
     status = "new"  # Default status
     details = {}
     
-    # Access tools through global scope if available
-    global get_existing_leads, get_website_visits, get_crm_activities
-    
     # If agent imports were successful, try to use the tools
     if agent_initialized:
         try:
-            # Try to access tools from the module scope
-            try:
-                from tools import get_existing_leads, get_website_visits, get_crm_activities
-            except ImportError as e:
-                print(f"Warning: Could not import specific tools: {str(e)}")
+            # Safely access the agent's tools
+            if 'agent' in globals() and hasattr(agent, 'tools'):
+                # Find the tools we need
+                leads_tool = None
+                visits_tool = None
+                activities_tool = None
                 
-            # Use the get_existing_leads tool if available
-            try:
-                if 'get_existing_leads' in globals():
-                    leads_result = await get_existing_leads({"query": {"company": company, "checkExists": True}})
-                    
-                    # Check if company exists in leads
-                    if leads_result and isinstance(leads_result, dict) and leads_result.get("exists", False):
-                        status = "existing_lead"
-                        details["leads"] = leads_result
-                    elif leads_result and isinstance(leads_result, list) and len(leads_result) > 0:
-                        status = "existing_lead"
-                        details["leads"] = leads_result
-            except Exception as lead_error:
-                print(f"Warning when checking for existing leads: {str(lead_error)}")
-            
-            # Check website visits if tool is available
-            try:
-                if 'get_website_visits' in globals():
-                    visits_result = await get_website_visits({"domain": company})
-                    if visits_result and len(visits_result) > 0:
-                        status = "showed_interest"
-                        details["visits"] = visits_result
-            except Exception as visit_error:
-                print(f"Warning when checking website visits: {str(visit_error)}")
-            
-            # Check CRM activities if tool is available
-            try:
-                if 'get_crm_activities' in globals():
-                    activities = await get_crm_activities({"company": company})
-                    if activities and len(activities) > 0:
-                        details["activities"] = activities
-                        # If they have activities but weren't marked as existing lead, mark them now
-                        if status == "new":
+                for tool in agent.tools:
+                    if hasattr(tool, 'name'):
+                        if tool.name == 'get_existing_leads':
+                            leads_tool = tool
+                        elif tool.name == 'get_website_visits':
+                            visits_tool = tool
+                        elif tool.name == 'get_crm_activities':
+                            activities_tool = tool
+                
+                # Use the get_existing_leads tool if available
+                if leads_tool:
+                    try:
+                        # Access the underlying function through the tool
+                        if hasattr(leads_tool, 'function'):
+                            leads_result = await leads_tool.function({"query": {"company": company, "checkExists": True}})
+                        elif hasattr(leads_tool, '__call__'):
+                            leads_result = await leads_tool({"query": {"company": company, "checkExists": True}})
+                        else:
+                            print(f"Warning: leads_tool has no callable method")
+                            leads_result = None
+                            
+                        # Check if company exists in leads
+                        if leads_result and isinstance(leads_result, dict) and leads_result.get("exists", False):
                             status = "existing_lead"
-            except Exception as activity_error:
-                print(f"Warning when checking CRM activities: {str(activity_error)}")
+                            details["leads"] = leads_result
+                        elif leads_result and isinstance(leads_result, list) and len(leads_result) > 0:
+                            status = "existing_lead"
+                            details["leads"] = leads_result
+                    except Exception as lead_error:
+                        print(f"Warning when checking for existing leads: {str(lead_error)}")
+                
+                # Check website visits if tool is available
+                if visits_tool:
+                    try:
+                        # Access the underlying function through the tool
+                        if hasattr(visits_tool, 'function'):
+                            visits_result = await visits_tool.function({"domain": company})
+                        elif hasattr(visits_tool, '__call__'):
+                            visits_result = await visits_tool({"domain": company})
+                        else:
+                            print(f"Warning: visits_tool has no callable method")
+                            visits_result = None
+                            
+                        if visits_result and len(visits_result) > 0:
+                            status = "showed_interest"
+                            details["visits"] = visits_result
+                    except Exception as visit_error:
+                        print(f"Warning when checking website visits: {str(visit_error)}")
+                
+                # Check CRM activities if tool is available
+                if activities_tool:
+                    try:
+                        # Access the underlying function through the tool
+                        if hasattr(activities_tool, 'function'):
+                            activities = await activities_tool.function({"company": company})
+                        elif hasattr(activities_tool, '__call__'):
+                            activities = await activities_tool({"company": company})
+                        else:
+                            print(f"Warning: activities_tool has no callable method")
+                            activities = None
+                            
+                        if activities and len(activities) > 0:
+                            details["activities"] = activities
+                            # If they have activities but weren't marked as existing lead, mark them now
+                            if status == "new":
+                                status = "existing_lead"
+                    except Exception as activity_error:
+                        print(f"Warning when checking CRM activities: {str(activity_error)}")
+            else:
+                print("Warning: agent or agent.tools not available")
                 
         except Exception as e:
             print(f"Error checking company status: {str(e)}")
             import traceback
             traceback.print_exc()
+    
+    # If we couldn't determine status through tools, fallback to simple logic
+    # This ensures the API continues to work even if tools are unavailable
     
     return {
         "status": status,
@@ -271,62 +306,76 @@ async def identify_best_contact(company: str, company_context: List[Dict[str, An
     contact_linkedin = None
     contact_email = None
     
-    # Access tools through global scope if available
-    global search_hubspot_contacts
-    
+    # If agent imports were successful, try to use the tools
     if agent_initialized:
         try:
-            # Try to import the search_hubspot_contacts tool directly
-            try:
-                from tools import search_hubspot_contacts
-            except ImportError as e:
-                print(f"Warning: Could not import search_hubspot_contacts: {str(e)}")
-            
-            # Use search_hubspot_contacts if available
-            if 'search_hubspot_contacts' in globals():
-                # Try to find existing contacts
-                contacts = await search_hubspot_contacts({"company": company})
+            # Safely access the agent's tools
+            if 'agent' in globals() and hasattr(agent, 'tools'):
+                # Find the contacts tool
+                contacts_tool = None
                 
-                if contacts and len(contacts) > 0:
-                    # Find the best contact based on job title
-                    best_contact = None
-                    
-                    # Get target job titles from context
-                    target_titles = []
-                    if company_context and len(company_context) > 0:
-                        target_titles = company_context[0].get("targetJobTitles", [])
-                    
-                    if not target_titles:
-                        target_titles = ["Sales Manager", "Marketing Manager", "CEO", "Founder", "Owner"]
-                    
-                    # Look for contacts with matching job titles
-                    for contact in contacts:
-                        job_title = contact.get("jobTitle", "").lower()
+                for tool in agent.tools:
+                    if hasattr(tool, 'name') and tool.name == 'search_hubspot_contacts':
+                        contacts_tool = tool
+                        break
+                
+                # Use the contacts tool if available
+                if contacts_tool:
+                    try:
+                        # Access the underlying function through the tool
+                        if hasattr(contacts_tool, 'function'):
+                            contacts = await contacts_tool.function({"company": company})
+                        elif hasattr(contacts_tool, '__call__'):
+                            contacts = await contacts_tool({"company": company})
+                        else:
+                            print(f"Warning: contacts_tool has no callable method")
+                            contacts = None
                         
-                        # Check if this contact's job title matches any target title
-                        for target in target_titles:
-                            if target.lower() in job_title:
-                                best_contact = contact
-                                break
-                        
-                        if best_contact:
-                            break
-                    
-                    # If no match found, just use the first contact
-                    if not best_contact and contacts:
-                        best_contact = contacts[0]
-                    
-                    # If we found a contact, use their info
-                    if best_contact:
-                        contact_name = f"{best_contact.get('firstName', '')} {best_contact.get('lastName', '')}".strip()
-                        if not contact_name:
-                            contact_name = best_contact.get("email", f"Contact at {company}")
-                        
-                        contact_role = best_contact.get("jobTitle", "Unknown Role")
-                        contact_reason = "Existing contact in Hubspot"
-                        contact_email = best_contact.get("email")
-                        contact_linkedin = best_contact.get("linkedinUrl")
-        
+                        if contacts and len(contacts) > 0:
+                            # Find the best contact based on job title
+                            best_contact = None
+                            
+                            # Get target job titles from context
+                            target_titles = []
+                            if company_context and len(company_context) > 0:
+                                target_titles = company_context[0].get("targetJobTitles", [])
+                            
+                            if not target_titles:
+                                target_titles = ["Sales Manager", "Marketing Manager", "CEO", "Founder", "Owner"]
+                            
+                            # Look for contacts with matching job titles
+                            for contact in contacts:
+                                job_title = contact.get("jobTitle", "").lower()
+                                
+                                # Check if this contact's job title matches any target title
+                                for target in target_titles:
+                                    if target.lower() in job_title:
+                                        best_contact = contact
+                                        break
+                                
+                                if best_contact:
+                                    break
+                            
+                            # If no match found, just use the first contact
+                            if not best_contact and contacts:
+                                best_contact = contacts[0]
+                            
+                            # If we found a contact, use their info
+                            if best_contact:
+                                contact_name = f"{best_contact.get('firstName', '')} {best_contact.get('lastName', '')}".strip()
+                                if not contact_name:
+                                    contact_name = best_contact.get("email", f"Contact at {company}")
+                                
+                                contact_role = best_contact.get("jobTitle", "Unknown Role")
+                                contact_reason = "Existing contact in Hubspot"
+                                contact_email = best_contact.get("email")
+                                contact_linkedin = best_contact.get("linkedinUrl")
+                    except Exception as contact_error:
+                        print(f"Error when searching contacts: {str(contact_error)}")
+                        import traceback
+                        traceback.print_exc()
+            else:
+                print("Warning: agent or agent.tools not available for contact search")
         except Exception as e:
             print(f"Error finding contacts: {str(e)}")
             import traceback
