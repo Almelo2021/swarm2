@@ -143,10 +143,10 @@ async def process_research_query(request: QueryRequest):
     
     try:
         
-        print(f"Processing query: {request.domain}")
+        print(f"Processing query: {request.company}")
         
         
-        result = await researcher(request.domain)
+        result = await researcher(request.company)
         print(f"Query completed successfully")
         return {"result": result}
     except Exception as e:
