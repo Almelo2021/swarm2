@@ -286,7 +286,6 @@ async def company_context() -> str:
         return f"Error fetching company context information: {str(e)}"
     
 
-@function_tool
 async def researcher(domain: str) -> str:
     """Comprehensive researcher function that gathers all available company information.
     
