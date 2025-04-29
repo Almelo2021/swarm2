@@ -328,7 +328,7 @@ async def researcher(domain: str) -> str:
         if "contacts" in hubspot_contacts and len(hubspot_contacts["contacts"]) == 0:
             # No contacts found in Hubspot, let's find leads using target job titles
             company_name = company_info[0].get("companyName") if company_info and len(company_info) > 0 else ""
-            leads_json = await get_existing_leads(company=company_name, titles=target_job_titles)
+            leads_json = await get_existing_leads(company=domain, titles=target_job_titles)
             leads = json.loads(leads_json)
         
         # Compile all research into one comprehensive result
