@@ -206,21 +206,41 @@ async def check_company_status(company: str) -> Dict[str, Any]:
     # If agent imports were successful, try to use the tools
     if agent_initialized:
         try:
-            # Check if company exists in leads
+            # Use the actual get_existing_leads tool with proper parameters
             leads_result = await get_existing_leads({"query": {"company": company, "checkExists": True}})
-            if leads_result and leads_result.get("exists", False):
-                status = "existing_lead"
-                details["leads"] = {"exists": True}
             
-            # Check website visits - only if we have a specific function for this
-            if "get_website_visits" in globals():
-                visits_result = await get_website_visits(company)
+            # Check if company exists in leads
+            if leads_result and isinstance(leads_result, dict) and leads_result.get("exists", False):
+                status = "existing_lead"
+                details["leads"] = leads_result
+            elif leads_result and isinstance(leads_result, list) and len(leads_result) > 0:
+                status = "existing_lead"
+                details["leads"] = leads_result
+            
+            # Check website visits
+            try:
+                visits_result = await get_website_visits({"domain": company})
                 if visits_result and len(visits_result) > 0:
                     status = "showed_interest"
                     details["visits"] = visits_result
+            except Exception as visit_error:
+                print(f"Warning when checking website visits: {str(visit_error)}")
+            
+            # Check CRM activities
+            try:
+                activities = await get_crm_activities({"company": company})
+                if activities and len(activities) > 0:
+                    details["activities"] = activities
+                    # If they have activities but weren't marked as existing lead, mark them now
+                    if status == "new":
+                        status = "existing_lead"
+            except Exception as activity_error:
+                print(f"Warning when checking CRM activities: {str(activity_error)}")
                 
         except Exception as e:
             print(f"Error checking company status: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     return {
         "status": status,
@@ -229,29 +249,80 @@ async def check_company_status(company: str) -> Dict[str, Any]:
 
 async def identify_best_contact(company: str, company_context: List[Dict[str, Any]]) -> ContactPerson:
     """Find the best person to contact based on company and context"""
-    # Use the company context to determine target personas
-    if not company_context:
-        # Default persona if no context available
-        return ContactPerson(
-            name="Unknown",
-            role="Sales Manager",
-            reason="Default target persona based on general company profile"
-        )
+    # First try to find existing contacts in Hubspot
+    contact_name = f"Decision Maker at {company}"
+    contact_role = "Sales Manager"  # Default role
+    contact_reason = "Default target persona based on company profile"
+    contact_linkedin = None
+    contact_email = None
     
-    # Get the first context (assuming it's the most relevant)
-    context = company_context[0]
+    if agent_initialized:
+        try:
+            # Use search_hubspot_contacts to find existing contacts
+            contacts = await search_hubspot_contacts({"company": company})
+            
+            if contacts and len(contacts) > 0:
+                # Find the best contact based on job title
+                best_contact = None
+                
+                # Get target job titles from context
+                target_titles = []
+                if company_context and len(company_context) > 0:
+                    target_titles = company_context[0].get("targetJobTitles", [])
+                
+                if not target_titles:
+                    target_titles = ["Sales Manager", "Marketing Manager", "CEO", "Founder", "Owner"]
+                
+                # Look for contacts with matching job titles
+                for contact in contacts:
+                    job_title = contact.get("jobTitle", "").lower()
+                    
+                    # Check if this contact's job title matches any target title
+                    for target in target_titles:
+                        if target.lower() in job_title:
+                            best_contact = contact
+                            break
+                    
+                    if best_contact:
+                        break
+                
+                # If no match found, just use the first contact
+                if not best_contact and contacts:
+                    best_contact = contacts[0]
+                
+                # If we found a contact, use their info
+                if best_contact:
+                    contact_name = f"{best_contact.get('firstName', '')} {best_contact.get('lastName', '')}".strip()
+                    if not contact_name:
+                        contact_name = best_contact.get("email", f"Contact at {company}")
+                    
+                    contact_role = best_contact.get("jobTitle", "Unknown Role")
+                    contact_reason = "Existing contact in Hubspot"
+                    contact_email = best_contact.get("email")
+                    contact_linkedin = best_contact.get("linkedinUrl")
+        
+        except Exception as e:
+            print(f"Error finding contacts: {str(e)}")
     
-    # Extract target job titles from context
-    target_job_titles = context.get("targetJobTitles", ["Sales Manager", "Marketing Manager"])
-    
-    # For this example, we'll just use the first job title
-    # In a real implementation, you would use LinkedIn/sales tools to find actual people
-    best_role = target_job_titles[0] if target_job_titles else "Sales Manager"
+    # If no contacts found, use company context to determine target personas
+    if contact_name == f"Decision Maker at {company}" and company_context:
+        # Get the first context (assuming it's the most relevant)
+        context = company_context[0]
+        
+        # Extract target job titles from context
+        target_job_titles = context.get("targetJobTitles", ["Sales Manager", "Marketing Manager"])
+        
+        # Use the first job title
+        best_role = target_job_titles[0] if target_job_titles else "Sales Manager"
+        contact_role = best_role
+        contact_reason = f"This role is a primary target based on your company profile: {best_role} is in your target job titles"
     
     return ContactPerson(
-        name=f"Decision Maker at {company}",
-        role=best_role,
-        reason=f"This role is a primary target based on your company profile: {best_role} is in your target job titles"
+        name=contact_name,
+        role=contact_role,
+        reason=contact_reason,
+        linkedin_url=contact_linkedin,
+        email=contact_email
     )
 
 async def create_outreach_plan(company: str, status: str, contact_person: ContactPerson, 
