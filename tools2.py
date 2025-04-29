@@ -16,9 +16,10 @@ async def get_existing_leads(company: str, titles: Optional[List[str]] = None) -
     params = {"query": company}
     
     # Add titles if provided
+    # Fixed code
     if titles and len(titles) > 0:
-        for title in titles:
-            params["title"] = title
+        # Use a list for title parameter to support multiple titles
+        params["title"] = titles
     
     try:
         response = requests.get(base_url, params=params)
