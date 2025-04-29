@@ -203,37 +203,52 @@ async def check_company_status(company: str) -> Dict[str, Any]:
     status = "new"  # Default status
     details = {}
     
+    # Access tools through global scope if available
+    global get_existing_leads, get_website_visits, get_crm_activities
+    
     # If agent imports were successful, try to use the tools
     if agent_initialized:
         try:
-            # Use the actual get_existing_leads tool with proper parameters
-            leads_result = await get_existing_leads({"query": {"company": company, "checkExists": True}})
-            
-            # Check if company exists in leads
-            if leads_result and isinstance(leads_result, dict) and leads_result.get("exists", False):
-                status = "existing_lead"
-                details["leads"] = leads_result
-            elif leads_result and isinstance(leads_result, list) and len(leads_result) > 0:
-                status = "existing_lead"
-                details["leads"] = leads_result
-            
-            # Check website visits
+            # Try to access tools from the module scope
             try:
-                visits_result = await get_website_visits({"domain": company})
-                if visits_result and len(visits_result) > 0:
-                    status = "showed_interest"
-                    details["visits"] = visits_result
+                from tools import get_existing_leads, get_website_visits, get_crm_activities
+            except ImportError as e:
+                print(f"Warning: Could not import specific tools: {str(e)}")
+                
+            # Use the get_existing_leads tool if available
+            try:
+                if 'get_existing_leads' in globals():
+                    leads_result = await get_existing_leads({"query": {"company": company, "checkExists": True}})
+                    
+                    # Check if company exists in leads
+                    if leads_result and isinstance(leads_result, dict) and leads_result.get("exists", False):
+                        status = "existing_lead"
+                        details["leads"] = leads_result
+                    elif leads_result and isinstance(leads_result, list) and len(leads_result) > 0:
+                        status = "existing_lead"
+                        details["leads"] = leads_result
+            except Exception as lead_error:
+                print(f"Warning when checking for existing leads: {str(lead_error)}")
+            
+            # Check website visits if tool is available
+            try:
+                if 'get_website_visits' in globals():
+                    visits_result = await get_website_visits({"domain": company})
+                    if visits_result and len(visits_result) > 0:
+                        status = "showed_interest"
+                        details["visits"] = visits_result
             except Exception as visit_error:
                 print(f"Warning when checking website visits: {str(visit_error)}")
             
-            # Check CRM activities
+            # Check CRM activities if tool is available
             try:
-                activities = await get_crm_activities({"company": company})
-                if activities and len(activities) > 0:
-                    details["activities"] = activities
-                    # If they have activities but weren't marked as existing lead, mark them now
-                    if status == "new":
-                        status = "existing_lead"
+                if 'get_crm_activities' in globals():
+                    activities = await get_crm_activities({"company": company})
+                    if activities and len(activities) > 0:
+                        details["activities"] = activities
+                        # If they have activities but weren't marked as existing lead, mark them now
+                        if status == "new":
+                            status = "existing_lead"
             except Exception as activity_error:
                 print(f"Warning when checking CRM activities: {str(activity_error)}")
                 
@@ -256,53 +271,66 @@ async def identify_best_contact(company: str, company_context: List[Dict[str, An
     contact_linkedin = None
     contact_email = None
     
+    # Access tools through global scope if available
+    global search_hubspot_contacts
+    
     if agent_initialized:
         try:
-            # Use search_hubspot_contacts to find existing contacts
-            contacts = await search_hubspot_contacts({"company": company})
+            # Try to import the search_hubspot_contacts tool directly
+            try:
+                from tools import search_hubspot_contacts
+            except ImportError as e:
+                print(f"Warning: Could not import search_hubspot_contacts: {str(e)}")
             
-            if contacts and len(contacts) > 0:
-                # Find the best contact based on job title
-                best_contact = None
+            # Use search_hubspot_contacts if available
+            if 'search_hubspot_contacts' in globals():
+                # Try to find existing contacts
+                contacts = await search_hubspot_contacts({"company": company})
                 
-                # Get target job titles from context
-                target_titles = []
-                if company_context and len(company_context) > 0:
-                    target_titles = company_context[0].get("targetJobTitles", [])
-                
-                if not target_titles:
-                    target_titles = ["Sales Manager", "Marketing Manager", "CEO", "Founder", "Owner"]
-                
-                # Look for contacts with matching job titles
-                for contact in contacts:
-                    job_title = contact.get("jobTitle", "").lower()
+                if contacts and len(contacts) > 0:
+                    # Find the best contact based on job title
+                    best_contact = None
                     
-                    # Check if this contact's job title matches any target title
-                    for target in target_titles:
-                        if target.lower() in job_title:
-                            best_contact = contact
+                    # Get target job titles from context
+                    target_titles = []
+                    if company_context and len(company_context) > 0:
+                        target_titles = company_context[0].get("targetJobTitles", [])
+                    
+                    if not target_titles:
+                        target_titles = ["Sales Manager", "Marketing Manager", "CEO", "Founder", "Owner"]
+                    
+                    # Look for contacts with matching job titles
+                    for contact in contacts:
+                        job_title = contact.get("jobTitle", "").lower()
+                        
+                        # Check if this contact's job title matches any target title
+                        for target in target_titles:
+                            if target.lower() in job_title:
+                                best_contact = contact
+                                break
+                        
+                        if best_contact:
                             break
                     
-                    if best_contact:
-                        break
-                
-                # If no match found, just use the first contact
-                if not best_contact and contacts:
-                    best_contact = contacts[0]
-                
-                # If we found a contact, use their info
-                if best_contact:
-                    contact_name = f"{best_contact.get('firstName', '')} {best_contact.get('lastName', '')}".strip()
-                    if not contact_name:
-                        contact_name = best_contact.get("email", f"Contact at {company}")
+                    # If no match found, just use the first contact
+                    if not best_contact and contacts:
+                        best_contact = contacts[0]
                     
-                    contact_role = best_contact.get("jobTitle", "Unknown Role")
-                    contact_reason = "Existing contact in Hubspot"
-                    contact_email = best_contact.get("email")
-                    contact_linkedin = best_contact.get("linkedinUrl")
+                    # If we found a contact, use their info
+                    if best_contact:
+                        contact_name = f"{best_contact.get('firstName', '')} {best_contact.get('lastName', '')}".strip()
+                        if not contact_name:
+                            contact_name = best_contact.get("email", f"Contact at {company}")
+                        
+                        contact_role = best_contact.get("jobTitle", "Unknown Role")
+                        contact_reason = "Existing contact in Hubspot"
+                        contact_email = best_contact.get("email")
+                        contact_linkedin = best_contact.get("linkedinUrl")
         
         except Exception as e:
             print(f"Error finding contacts: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     # If no contacts found, use company context to determine target personas
     if contact_name == f"Decision Maker at {company}" and company_context:
