@@ -4,7 +4,7 @@ from pydantic import BaseModel
 import sys
 import os
 from pathlib import Path
-import json
+from tools import researcher
 
 # Add parent directory to path so we can import our modules
 sys.path.append(str(Path(__file__).parent.parent))
@@ -19,9 +19,7 @@ def import_agent_components():
             get_existing_leads,
             search_hubspot_contacts,
             get_website_visits,
-            get_crm_activities,
-            company_context,
-            researcher
+            get_crm_activities
         )
         
         # Create the agent
@@ -33,34 +31,28 @@ def import_agent_components():
                 get_existing_leads,
                 search_hubspot_contacts,
                 get_website_visits,
-                get_crm_activities,
-                company_context,
-                researcher
+                get_crm_activities
             ],
         )
         
-        return agent, Runner, researcher
+        return agent, Runner
     except ImportError as e:
         print(f"Error importing agent components: {str(e)}")
         raise e
 
 # Try to import agent components
 try:
-    agent, Runner, researcher_function = import_agent_components()
+    agent, Runner = import_agent_components()
     agent_initialized = True
 except Exception as e:
     print(f"Failed to initialize agent: {str(e)}")
     agent_initialized = False
-    researcher_function = None
 
 app = FastAPI()
 
 class QueryRequest(BaseModel):
     company: str
     query: str
-
-class ResearcherRequest(BaseModel):
-    domain: str
 
 # Main route with HTML response
 @app.get("/", response_class=HTMLResponse)
@@ -112,14 +104,6 @@ async def root():
                 </div>
                 
                 <div class="endpoint">
-                    <h2>Researcher Endpoint</h2>
-                    <p>Send POST requests to <code>/api/researcher</code> with the following JSON structure:</p>
-                    <pre><code>{
-  "domain": "example.com"
-}</code></pre>
-                </div>
-                
-                <div class="endpoint">
                     <h2>Health Check</h2>
                     <p>Check API status at <a href="/api/health">/api/health</a></p>
                 </div>
@@ -151,30 +135,22 @@ async def process_query(request: QueryRequest):
         import traceback
         traceback.print_exc()
         return {"error": error_msg}
+    
+
 
 @app.post("/api/researcher")
-async def run_researcher(request: ResearcherRequest):
-    if not agent_initialized or researcher_function is None:
-        return {"error": "Researcher function not properly initialized. Check server logs for details."}
+async def process_research_query(request: QueryRequest):
     
     try:
-        print(f"Running researcher for domain: {request.domain}")
         
-        # Call the researcher function directly
-        result = await researcher_function(domain=request.domain)
+        print(f"Processing query: {request.domain}")
         
-        # Parse the result to return as JSON
-        try:
-            parsed_result = json.loads(result)
-            print(f"Researcher completed successfully for domain: {request.domain}")
-            return parsed_result
-        except json.JSONDecodeError:
-            # If the result is not valid JSON, return it as a string
-            print(f"Researcher completed but returned non-JSON result")
-            return {"result": result}
-            
+        
+        result = await researcher(request.domain)
+        print(f"Query completed successfully")
+        return {"result": result}
     except Exception as e:
-        error_msg = f"Error running researcher: {str(e)}"
+        error_msg = f"Error processing query: {str(e)}"
         print(f"ERROR: {error_msg}")
         import traceback
         traceback.print_exc()
@@ -186,8 +162,7 @@ async def health_check():
     return {
         "status": "ok", 
         "message": "API is running",
-        "agent_initialized": agent_initialized,
-        "researcher_available": researcher_function is not None
+        "agent_initialized": agent_initialized
     }
 
 # For local development
