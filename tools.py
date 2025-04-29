@@ -263,3 +263,100 @@ def timestamp_to_date(timestamp):
         return datetime.fromtimestamp(timestamp/1000).strftime('%Y-%m-%d %H:%M:%S')
     except:
         return str(timestamp)
+    
+
+@function_tool
+async def company_context() -> str:
+    """Fetch company context information.
+    
+    Returns:
+        JSON string containing company context information
+    """
+    url = "https://app.rebounds.ai/api/companycontextsven"
+    
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Return the formatted JSON response
+        return json.dumps(data, indent=2)
+    
+    except Exception as e:
+        return f"Error fetching company context information: {str(e)}"
+    
+
+@function_tool
+async def researcher(domain: str) -> str:
+    """Comprehensive researcher function that gathers all available company information.
+    
+    This function calls multiple data sources in parallel to efficiently collect
+    company context, contacts, website visits, CRM activities, and potential leads.
+    
+    Args:
+        domain: Company domain to research
+    
+    Returns:
+        JSON string containing compiled research data
+    """
+    # Create tasks for parallel execution
+    company_info_task = asyncio.create_task(company_context())
+    hubspot_contacts_task = asyncio.create_task(search_hubspot_contacts(company=domain))
+    website_visits_task = asyncio.create_task(get_website_visits(domain=domain))
+    crm_activities_task = asyncio.create_task(get_crm_activities(domain=domain))
+    
+    # Wait for all tasks to complete
+    company_info_json = await company_info_task
+    hubspot_contacts_json = await hubspot_contacts_task
+    website_visits_json = await website_visits_task
+    crm_activities_json = await crm_activities_task
+    
+    # Parse returned JSON strings
+    try:
+        company_info = json.loads(company_info_json)
+        hubspot_contacts = json.loads(hubspot_contacts_json)
+        website_visits = json.loads(website_visits_json)
+        crm_activities = json.loads(crm_activities_json)
+        
+        # Extract target job titles from company context if available
+        target_job_titles = []
+        if company_info and len(company_info) > 0:
+            target_job_titles = company_info[0].get("targetJobTitles", [])
+        
+        # Check if we need to find leads
+        leads_json = "{}"
+        leads = {}
+        if "contacts" in hubspot_contacts and len(hubspot_contacts["contacts"]) == 0:
+            # No contacts found in Hubspot, let's find leads using target job titles
+            company_name = company_info[0].get("companyName") if company_info and len(company_info) > 0 else ""
+            leads_json = await get_existing_leads(company=company_name, titles=target_job_titles)
+            leads = json.loads(leads_json)
+        
+        # Compile all research into one comprehensive result
+        result = {
+            "company_context": company_info[0] if company_info and len(company_info) > 0 else {},
+            "hubspot_contacts": hubspot_contacts,
+            "website_visits": website_visits,
+            "crm_activities": crm_activities,
+            "potential_leads": leads if leads else {}
+        }
+        
+        # Generate a summary section
+        summary = {
+            "company_name": result["company_context"].get("companyName", "Unknown"),
+            "website": result["company_context"].get("website", "Unknown"),
+            "contacts_found": hubspot_contacts.get("total_found", 0),
+            "website_visits": website_visits.get("total_visits", 0) if isinstance(website_visits, dict) else 0,
+            "target_industries": result["company_context"].get("targetIndustries", []),
+            "target_job_titles": target_job_titles,
+            "potential_leads_found": leads.get("total_results", 0) if leads else 0
+        }
+        
+        result["summary"] = summary
+        
+        return json.dumps(result, indent=2)
+        
+    except json.JSONDecodeError as e:
+        return f"Error parsing research results: {str(e)}"
+    except Exception as e:
+        return f"Error in researcher function: {str(e)}"
