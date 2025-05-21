@@ -1,18 +1,18 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from typing import Any, Dict, List, Optional, Type
+from typing import List, Optional, Dict, Any, Type
 import sys
 import os
 from pathlib import Path
 
-#  Third‑party
+# Third‑party
 from openai import OpenAI
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Local imports & dynamic path handling
 # ──────────────────────────────────────────────────────────────────────────────
-#  Allow `python -m uvicorn api.index:app --reload` from repo root
+# Allow `python -m uvicorn api.index:app --reload` from repo root
 sys.path.append(str(Path(__file__).parent.parent))
 
 try:
@@ -28,67 +28,63 @@ except ImportError as e:
     Agent = WebSearchTool = Runner = None  # type: ignore
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  OpenAI client – reads key from ENV; hard‑code only for quick tests.
+#  OpenAI client (reads key from ENV)
 # ──────────────────────────────────────────────────────────────────────────────
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Structured‑output Pydantic models
 # ──────────────────────────────────────────────────────────────────────────────
-class IntegerOutput(BaseModel):
-    """Single integer value."""
+class _BaseConfig:
+    extra = "forbid"
 
+
+class IntegerOutput(BaseModel):
     answer: int
 
-    class Config:
-        extra = "forbid"
+    class Config(_BaseConfig):
+        pass
 
 
 class FloatOutput(BaseModel):
     answer: float
 
-    class Config:
-        extra = "forbid"
+    class Config(_BaseConfig):
+        pass
 
 
 class StringOutput(BaseModel):
     answer: str
 
-    class Config:
-        extra = "forbid"
+    class Config(_BaseConfig):
+        pass
 
 
 class StringListOutput(BaseModel):
     answer: List[str]
 
-    class Config:
-        extra = "forbid"
+    class Config(_BaseConfig):
+        pass
 
 
 class KVPair(BaseModel):
     key: str
-    value: str  # keep as string to meet JSON‑schema requirement
+    value: str  # keep values as strings to satisfy strict schema rules
 
-    class Config:
-        extra = "forbid"
+    class Config(_BaseConfig):
+        pass
 
 
 class KVListOutput(BaseModel):
-    """Dictionary represented as list of {key, value} (both strings) pairs."""
+    """Dictionary represented as a list of key/value string pairs."""
 
     answer: List[KVPair]
 
-    class Config:
-        extra = "forbid"(BaseModel):
-    """Represent a dictionary as a list of key/value pairs to satisfy Structured‑Outputs rules."""
-
-    answer: List[KVPair]
-
-    class Config:
-        extra = "forbid"
+    class Config(_BaseConfig):
+        pass
 
 
-OUTPUT_MODELS: dict[str, Type[BaseModel]] = {
+OUTPUT_MODELS: Dict[str, Type[BaseModel]] = {
     "integer": IntegerOutput,
     "float": FloatOutput,
     "string": StringOutput,
@@ -103,19 +99,16 @@ app = FastAPI()
 
 
 class QueryRequest(BaseModel):
-    """Input payload for /api and /api/researcher endpoints."""
-
     company: str
     query: str
-    outputType: Optional[str] = None  #  e.g. "integer", "string", ...
+    outputType: Optional[str] = None  # e.g. "integer", "dict", ...
 
-    #  Normalise to lower‑case for internal use
     def output_type_normalised(self) -> Optional[str]:
         return self.outputType.lower() if self.outputType else None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Initialise agent (optional – only if imports succeeded)
+#  Initialise Agent (if SDK present)
 # ──────────────────────────────────────────────────────────────────────────────
 if Agent is not None:
     agent = Agent(
@@ -135,61 +128,53 @@ else:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  HTML root
+#  Landing page
 # ──────────────────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def root() -> str:
-    """Simple landing page."""
-
-    output_types = ", ".join(OUTPUT_MODELS)
+    types_list = ", ".join(OUTPUT_MODELS.keys())
 
     return f"""
     <!DOCTYPE html>
     <html>
-      <head>
-        <title>Sales Intelligence Agent API</title>
-        <style>
-          body{{font-family:Arial,Helvetica,sans-serif;max-width:800px;margin:40px auto;line-height:1.6}}
-          pre{{background:#f4f4f4;padding:16px;border-radius:8px}}
-          code{{background:#e7e7e7;padding:2px 4px;border-radius:4px}}
-        </style>
-      </head>
-      <body>
-        <h1>Hello World 👋</h1>
-        <p>Welcome to the Sales Intelligence Agent API.</p>
-        <h2>POST /api</h2>
-        <p>JSON schema:</p>
-        <pre><code>{{
+        <head>
+            <title>Sales Intelligence Agent API</title>
+            <style>
+                body{{font-family:Arial,Helvetica,sans-serif;max-width:800px;margin:40px auto;line-height:1.6}}
+                pre{{background:#f4f4f4;padding:16px;border-radius:8px}}
+                code{{background:#e7e7e7;padding:2px 4px;border-radius:4px}}
+            </style>
+        </head>
+        <body>
+            <h1>Hello World 👋</h1>
+            <p>Welcome to the Sales Intelligence Agent API.</p>
+            <h2>POST /api</h2>
+            <p>Example payload:</p>
+            <pre><code>{{
   "company": "example.com",
-  "query": "Do they have a marketing team?",
-  "outputType": "integer"  // optional – one of: {output_types}
+  "query": "Name the last 3 US Presidents?",
+  "outputType": "dict"  // optional – {types_list}
 }}</code></pre>
-        <h2>Health Check</h2>
-        <p><a href="/api/health">/api/health</a></p>
-      </body>
+            <h2>Health Check</h2>
+            <p><a href="/api/health">/api/health</a></p>
+        </body>
     </html>
     """
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Helper – run structured‑output query via OpenAI Responses API
+#  Helper: run Structured‑Output query
 # ──────────────────────────────────────────────────────────────────────────────
 async def run_structured_query(prompt: str, output_type: str):
     model_cls = OUTPUT_MODELS.get(output_type)
     if model_cls is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported outputType '{output_type}'. Supported: {', '.join(OUTPUT_MODELS)}",
-        )
+        raise HTTPException(status_code=400, detail=f"Unsupported outputType '{output_type}'.")
 
     try:
         response = client.responses.parse(
-            model="gpt-4.1",  #  kept per user preference
+            model="gpt-4.1",
             input=[
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant. Follow the schema strictly.",
-                },
+                {"role": "system", "content": "You are a helpful assistant. Follow the schema strictly."},
                 {"role": "user", "content": prompt},
             ],
             text_format=model_cls,
@@ -205,34 +190,27 @@ async def run_structured_query(prompt: str, output_type: str):
 # ──────────────────────────────────────────────────────────────────────────────
 @app.post("/api")
 async def process_query(req: QueryRequest):
-    formatted_query = f"Company: {req.company} | Query: {req.query}"
+    prompt = f"Company: {req.company} | Query: {req.query}"
 
     if req.outputType:
-        #  Structured response requested ‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑
-        print(f"Structured query ({req.output_type_normalised()}) for {req.company}")
-        result = await run_structured_query(formatted_query, req.output_type_normalised())
-        return {"result": result}
+        print(f"Structured query → {req.outputType} for {req.company}")
+        return {"result": await run_structured_query(prompt, req.output_type_normalised())}
 
-    #  Fallback to agent (unstructured) ‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑
     if not agent_initialized:
-        raise HTTPException(
-            status_code=500,
-            detail="OpenAI Agents SDK not properly initialized. Check server logs.",
-        )
+        raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
 
     try:
-        print(f"Running agent query for {req.company}")
-        agent_result = await Runner.run(agent, formatted_query)
-        return {"result": agent_result.final_output}
+        print(f"Agent query for {req.company}")
+        result = await Runner.run(agent, prompt)
+        return {"result": result.final_output}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
 
 
-# ───────────────────────────────── researcher endpoint ─────────────────────────────────
 @app.post("/api/researcher")
 async def process_research_query(req: QueryRequest):
     try:
-        from tools2 import researcher  #  import here to avoid circular refs
+        from tools2 import researcher
 
         print(f"Researcher query for {req.company}")
         result = await researcher(req.company)
@@ -241,13 +219,10 @@ async def process_research_query(req: QueryRequest):
         raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
 
 
-# ────────────────────────────────── health check ──────────────────────────────────
 @app.get("/api/health")
 async def health_check():
-    return {
-        "status": "ok",
-        "agent_initialized": agent_initialized,
-    }
+    return {"status": "ok", "agent_initialized": agent_initialized}
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Local dev entry point
