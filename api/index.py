@@ -125,7 +125,7 @@ if Agent is not None:
         model="gpt-4.1",
         tools=[
             WebSearchTool(),
-            get_existing_leads,
+            #get_existing_leads,
             search_hubspot_contacts,
             get_website_visits,
             get_crm_activities,
