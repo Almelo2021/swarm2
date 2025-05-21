@@ -234,6 +234,7 @@ async def process_query(req: QueryRequest):
 
     try:
         result = await Runner.run(agent, prompt)
+        print(result)
         return {"result": result.final_output}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
