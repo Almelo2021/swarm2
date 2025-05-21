@@ -239,6 +239,8 @@ async def process_query(req: QueryRequest):
         print(result.last_agent)
         print(result.raw_responses)
         print(result._last_agent)
+        print("swen")
+        print(result.final_output)
         return {"result": result.final_output}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
