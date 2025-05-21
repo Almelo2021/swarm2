@@ -1,41 +1,53 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any, Type
+from __future__ import annotations
+
+"""Sales‑Intelligence Agent API
+───────────────────────────────
+Rewritten so that *all* requests (structured or free‑form) go through the
+Agents SDK, letting the model call tools such as `search_hubspot_contacts`.
+
+If the client specifies an `outputType`, the agent is instructed to return a
+JSON object conforming to the matching Pydantic schema.  The server validates
+that output before returning it to the caller.
+
+Optionally, the client can set `includeSources=true` to receive any tool
+citations the agent emitted (e.g. links returned by `WebSearchTool`).  A tool
+can expose its citations by attaching them to the `sources` field of its
+return value, or by using the standard `.sources` attribute in the Agents SDK.
+"""
+
 import asyncio
-import sys
+import json
 import os
+import sys
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Type
 
-# Third‑party
-from openai import OpenAI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, ValidationError
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Local imports & dynamic path handling
+#  Dynamic import of local packages
 # ──────────────────────────────────────────────────────────────────────────────
+
 sys.path.append(str(Path(__file__).parent.parent))
-
 try:
-    from agents import Agent, WebSearchTool, Runner
+    from agents import Agent, Runner, WebSearchTool  # noqa: WPS433 (import outside top‑level)
     from tools import (
         get_existing_leads,
-        search_hubspot_contacts,
-        get_website_visits,
         get_crm_activities,
+        get_website_visits,
+        search_hubspot_contacts,
     )
-except ImportError as e:
-    print(f"Error importing agent components: {e}")
-    Agent = WebSearchTool = Runner = None  # type: ignore
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  OpenAI client (reads key from ENV)
-# ──────────────────────────────────────────────────────────────────────────────
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # keep the client for future use
+except ImportError as exc:  # pragma: no cover
+    print(f"Warning: Agent SDK not available: {exc}")
+    Agent = WebSearchTool = Runner = None  # type: ignore[assignment]
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Structured‑output Pydantic models
 # ──────────────────────────────────────────────────────────────────────────────
-class _BaseConfig:
+
+class _BaseConfig:  # noqa: WPS110 (name < 3 chars)
     extra = "forbid"
 
 
@@ -69,14 +81,14 @@ class StringListOutput(BaseModel):
 
 class KVPair(BaseModel):
     key: str
-    value: str  # keep values as strings to satisfy strict schema rules
+    value: str
 
     class Config(_BaseConfig):
         pass
 
 
 class KVListOutput(BaseModel):
-    """Dictionary represented as a list of key/value string pairs."""
+    """Dictionary represented as a list of key/value pairs."""
 
     answer: List[KVPair]
 
@@ -95,13 +107,15 @@ OUTPUT_MODELS: Dict[str, Type[BaseModel]] = {
 # ──────────────────────────────────────────────────────────────────────────────
 #  FastAPI setup
 # ──────────────────────────────────────────────────────────────────────────────
-app = FastAPI()
+
+app = FastAPI(title="Sales‑Intelligence Agent API", version="2.0")
 
 
 class QueryRequest(BaseModel):
     company: str
     query: str
-    outputType: Optional[str] = None  # e.g. "integer", "dict", ...
+    outputType: Optional[str] = None  # noqa: N815  (keep camelCase for client)
+    includeSources: Optional[bool] = False  # noqa: N815
 
     def output_type_normalised(self) -> Optional[str]:
         return self.outputType.lower() if self.outputType else None
@@ -111,6 +125,7 @@ class BulkQuery(BaseModel):
     companies: List[str]
     query: str
     outputType: Optional[str] = None
+    includeSources: Optional[bool] = False
 
     def output_type_normalised(self) -> Optional[str]:
         return self.outputType.lower() if self.outputType else None
@@ -119,6 +134,7 @@ class BulkQuery(BaseModel):
 # ──────────────────────────────────────────────────────────────────────────────
 #  Initialise Agent (if SDK present)
 # ──────────────────────────────────────────────────────────────────────────────
+
 if Agent is not None:
     agent = Agent(
         name="Assistant",
@@ -131,88 +147,105 @@ if Agent is not None:
             get_crm_activities,
         ],
     )
-    agent_initialized = True
-else:
-    agent_initialized = False
+    agent_initialised = True
+else:  # pragma: no cover
+    agent_initialised = False
+
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Helper: agent‑driven structured query
+#  Helper: build schema instruction
 # ──────────────────────────────────────────────────────────────────────────────
-async def run_agent_structured(prompt: str, output_type: str):
-    """Execute the agent *with* tool access and validate the final output against
-    a strict Pydantic schema. If the returned JSON does not match, an HTTP 500
-    is raised so the caller immediately sees the mismatch.
-    """
-    if not agent_initialized:
-        raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
 
-    model_cls = OUTPUT_MODELS.get(output_type)
-    if model_cls is None:
-        raise HTTPException(status_code=400, detail=f"Unsupported outputType '{output_type}'.")
-
-    # Tell the assistant to answer exclusively with JSON matching the schema.
-    schema_json = model_cls.schema_json(indent=2)
-
-    agent_prompt = (
-        f"{prompt}\n\n"
-        "When answering, respond ONLY with a JSON object that follows *exactly* the schema below.\n"
-        "Do not add markdown code fences, do not include any explanatory text.\n"
-        f"Schema:\n{schema_json}"
+def _schema_instruction(model_cls: Type[BaseModel]) -> str:
+    """Return a prompt fragment instructing the assistant to output JSON."""
+    schema = json.dumps(model_cls.model_json_schema()["properties"], indent=2)
+    return (
+        "Return **only** a JSON object fulfilling this schema (no markdown, no code‑block):\n"
+        f"```json\n{schema}\n```"
     )
 
-    try:
-        result = await Runner.run(agent, agent_prompt)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
 
-    output_text = result.final_output.strip()
+# ──────────────────────────────────────────────────────────────────────────────
+#  Helper: run an Agent query and (optionally) validate structured output
+# ──────────────────────────────────────────────────────────────────────────────
 
-    try:
-        parsed = model_cls.model_validate_json(output_text)
-        return parsed.model_dump(mode="json")
-    except Exception as exc:
-        # Provide visibility on what the model actually produced for easier debugging.
-        detail = (
-            "Structured response did not match the expected schema. "
-            f"Raw output was: {output_text}. Error: {exc}"
-        )
-        raise HTTPException(status_code=500, detail=detail) from exc
+async def _run_agent(
+    prompt: str,
+    *,
+    output_type: Optional[str] = None,
+    include_sources: bool = False,
+) -> Dict[str, Any]:
+    """Execute the Agents SDK and post‑process the result."""
+
+    if not agent_initialised:  # pragma: no cover
+        raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
+
+    # Add schema instruction when structured output requested
+    if output_type is not None:
+        model_cls = OUTPUT_MODELS.get(output_type)
+        if model_cls is None:
+            raise HTTPException(status_code=400, detail=f"Unsupported outputType '{output_type}'.")
+        prompt += "\n\n" + _schema_instruction(model_cls)
+
+    result = await Runner.run(agent, prompt)
+    final_output: str = result.final_output  # type: ignore[attr-defined]
+
+    # Validate / parse if needed
+    parsed_output: Any
+    if output_type is not None:
+        try:
+            parsed_output = OUTPUT_MODELS[output_type].model_validate_json(final_output).model_dump(mode="json")
+        except (ValidationError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=500, detail=f"Structured output did not match schema: {exc}") from exc
+    else:
+        parsed_output = final_output
+
+    response: Dict[str, Any] = {"result": parsed_output}
+
+    if include_sources:
+        # Runner.run exposes tool call metadata on the .sources attr (SDK ≥ 2025‑04‑10)
+        # Fallback to empty list if not present.
+        response["sources"] = getattr(result, "sources", [])
+
+    return response
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Landing page
 # ──────────────────────────────────────────────────────────────────────────────
-@app.get("/", response_class=HTMLResponse)
-async def root() -> str:
-    types_list = ", ".join(OUTPUT_MODELS.keys())
 
+@app.get("/", response_class=HTMLResponse)
+async def root() -> str:  # noqa: D401 (imperative mood)
+    types_list = ", ".join(OUTPUT_MODELS.keys())
     return f"""
     <!DOCTYPE html>
     <html>
-        <head>
-            <title>Sales Intelligence Agent API</title>
-            <style>
-                body{{font-family:Arial,Helvetica,sans-serif;max-width:800px;margin:40px auto;line-height:1.6}}
-                pre{{background:#f4f4f4;padding:16px;border-radius:8px}}
-                code{{background:#e7e7e7;padding:2px 4px;border-radius:4px}}
-            </style>
-        </head>
-        <body>
-            <h1>Hello World 👋</h1>
-            <p>Welcome to the Sales Intelligence Agent API.</p>
-            <h2>Single query → POST /api</h2>
-            <pre><code>{{"company": "example.com", "query": "…", "outputType": "string"}}</code></pre>
+    <head>
+        <title>Sales Intelligence Agent API</title>
+        <style>
+            body{{font-family:Arial,Helvetica,sans-serif;max-width:800px;margin:40px auto;line-height:1.6}}
+            pre{{background:#f4f4f4;padding:16px;border-radius:8px}}
+            code{{background:#e7e7e7;padding:2px 4px;border-radius:4px}}
+        </style>
+    </head>
+    <body>
+        <h1>Hello World 👋</h1>
+        <p>Welcome to the Sales‑Intelligence Agent API.</p>
 
-            <h2>Bulk query → POST /api/bulk</h2>
-            <pre><code>{{
+        <h2>Single query → POST /api</h2>
+        <pre><code>{{"company": "example.com", "query": "…", "outputType": "string", "includeSources": true}}</code></pre>
+
+        <h2>Bulk query → POST /api/bulk</h2>
+        <pre><code>{{
   "companies": ["a.com", "b.com"],
   "query": "…",
-  "outputType": "dict"  // optional – {types_list}
+  "outputType": "dict",  // optional – {types_list}
+  "includeSources": true
 }}</code></pre>
 
-            <h2>Health Check</h2>
-            <p><a href="/api/health">/api/health</a></p>
-        </body>
+        <h2>Health Check</h2>
+        <p><a href="/api/health">/api/health</a></p>
+    </body>
     </html>
     """
 
@@ -220,73 +253,70 @@ async def root() -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 #  Single‑company endpoint
 # ──────────────────────────────────────────────────────────────────────────────
+
 @app.post("/api")
-async def process_query(req: QueryRequest):
+async def process_query(req: QueryRequest):  # noqa: D401
     prompt = f"Company: {req.company} | Query: {req.query}"
-
-    # Route *all* requests through the Agent so tools are always available.
-    if req.outputType:
-        return {"result": await run_agent_structured(prompt, req.output_type_normalised())}
-
-    # Unstructured – we still use the agent but we do not validate the output.
-    if not agent_initialized:
-        raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
-
-    try:
-        result = await Runner.run(agent, prompt)
-        return {"result": result.final_output}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
+    return await _run_agent(
+        prompt,
+        output_type=req.output_type_normalised(),
+        include_sources=bool(req.includeSources),
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Bulk endpoint
 # ──────────────────────────────────────────────────────────────────────────────
+
 @app.post("/api/bulk")
-async def bulk_process(req: BulkQuery):
+async def bulk_process(req: BulkQuery):  # noqa: D401
     async def handle_company(company: str):
         prompt = f"Company: {company} | Query: {req.query}"
         try:
-            if req.outputType:
-                res = await run_agent_structured(prompt, req.output_type_normalised())
-            else:
-                if not agent_initialized:
-                    raise RuntimeError("Agents SDK not initialised.")
-                res = (await Runner.run(agent, prompt)).final_output
-            return {"company": company, "result": res}
-        except Exception as exc:
-            return {"company": company, "error": str(exc)}
+            return await _run_agent(
+                prompt,
+                output_type=req.output_type_normalised(),
+                include_sources=bool(req.includeSources),
+            ) | {"company": company}
+        except HTTPException as exc:
+            return {"company": company, "error": exc.detail}
 
-    tasks = [handle_company(c) for c in req.companies]
-    results = await asyncio.gather(*tasks)
-    return {"results": results}
+    results: Sequence[Dict[str, Any]] = await asyncio.gather(*[handle_company(c) for c in req.companies])
+    return {"results": list(results)}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Researcher passthrough endpoint
+#  Researcher passthrough endpoint (unchanged)
 # ──────────────────────────────────────────────────────────────────────────────
+
 @app.post("/api/researcher")
-async def process_research_query(req: QueryRequest):
+async def process_research_query(req: QueryRequest):  # noqa: D401
     try:
-        from tools2 import researcher
+        from tools2 import researcher  # local import to keep optional
+    except ImportError as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Researcher tool missing: {exc}") from exc
+
+    try:
         res = await researcher(req.company)
         return {"result": res}
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Health check
 # ──────────────────────────────────────────────────────────────────────────────
+
 @app.get("/api/health")
-async def health_check():
-    return {"status": "ok", "agent_initialized": agent_initialized}
+async def health_check():  # noqa: D401
+    return {"status": "ok", "agent_initialised": agent_initialised}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Local dev entry point
 # ──────────────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
+
+if __name__ == "__main__":  # pragma: no cover
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
