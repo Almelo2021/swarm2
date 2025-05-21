@@ -67,13 +67,19 @@ class StringListOutput(BaseModel):
 
 class KVPair(BaseModel):
     key: str
-    value: Any
+    value: str  # keep as string to meet JSON‑schema requirement
 
     class Config:
         extra = "forbid"
 
 
 class KVListOutput(BaseModel):
+    """Dictionary represented as list of {key, value} (both strings) pairs."""
+
+    answer: List[KVPair]
+
+    class Config:
+        extra = "forbid"(BaseModel):
     """Represent a dictionary as a list of key/value pairs to satisfy Structured‑Outputs rules."""
 
     answer: List[KVPair]
