@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-"""Sales-Intelligence Agent API (v2.1)
-────────────────────────────────────────
-•  All requests run through Agents SDK so every tool is available.
-•  Robust post‑processing that tolerates the model accidentally wrapping its
-   answer in ```json fences or adding chatter, preventing schema‑mismatch
-   errors like the one you saw.
-•  Optional `includeSources` flag unchanged.
+"""Sales‑Intelligence Agent API (rollback to v2.0 behaviour)
+────────────────────────────────────────────────────────────
+•  Removes the optional `includeSources` parameter and all related logic.
+•  Restores the prompt instruction that previously worked in production.
+•  Keeps best‑effort JSON extraction so accidental ```json fences are tolerated.
 """
 
 import asyncio
@@ -103,14 +101,13 @@ OUTPUT_MODELS: Dict[str, Type[BaseModel]] = {
 #  FastAPI init
 # ──────────────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Sales‑Intelligence Agent API", version="2.1")
+app = FastAPI(title="Sales‑Intelligence Agent API", version="2.0")
 
 
 class QueryRequest(BaseModel):
     company: str
     query: str
     outputType: Optional[str] = None
-    includeSources: Optional[bool] = False
 
     def output_type_normalised(self) -> Optional[str]:
         return self.outputType.lower() if self.outputType else None
@@ -120,7 +117,6 @@ class BulkQuery(BaseModel):
     companies: List[str]
     query: str
     outputType: Optional[str] = None
-    includeSources: Optional[bool] = False
 
     def output_type_normalised(self) -> Optional[str]:
         return self.outputType.lower() if self.outputType else None
@@ -152,12 +148,12 @@ else:  # pragma: no cover
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _schema_instruction(model_cls: Type[BaseModel]) -> str:
-    """Tell the assistant to output raw JSON only (no back‑ticks)."""
+    """Return the old prompt that worked in production (with fenced schema)."""
 
     schema = json.dumps(model_cls.model_json_schema()["properties"], indent=2)
     return (
-        "Return **only** a JSON object that satisfies this schema. No markdown, "
-        "no code‑fences, no commentary.\n" + schema
+        "Return **only** a JSON object fulfilling this schema (no markdown, no code‑block):\n"
+        f"```json\n{schema}\n```"
     )
 
 
@@ -166,29 +162,21 @@ def _schema_instruction(model_cls: Type[BaseModel]) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _extract_json(text: str) -> str:
-    """Best‑effort extraction of a raw JSON string from model output."""
+    """Strip ```json fences or leading chatter before validation."""
 
     text = text.strip()
-
-    # 1) Strip ```json fences if present
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if fence:
         return fence.group(1).strip()
-
-    # 2) Trim leading chatter until first opening brace
     brace = text.find("{")
-    if brace != -1:
-        candidate = text[brace:]
-        return candidate.strip()
-
-    return text  # fallback: give caller original string
+    return text[brace:] if brace != -1 else text
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Core execution
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def _run_agent(*, prompt: str, output_type: Optional[str], include_sources: bool) -> Dict[str, Any]:
+async def _run_agent(*, prompt: str, output_type: Optional[str]) -> Dict[str, Any]:
     if not agent_initialised:
         raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
 
@@ -208,15 +196,9 @@ async def _run_agent(*, prompt: str, output_type: Optional[str], include_sources
         try:
             parsed = OUTPUT_MODELS[output_type].model_validate_json(cleaned).model_dump(mode="json")
         except (ValidationError, json.JSONDecodeError) as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Structured output did not match schema after cleaning: {exc}",
-            ) from exc
+            raise HTTPException(status_code=500, detail=f"Structured output did not match schema: {exc}") from exc
 
-    response: Dict[str, Any] = {"result": parsed}
-    if include_sources:
-        response["sources"] = getattr(run, "sources", [])
-    return response
+    return {"result": parsed}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -224,7 +206,7 @@ async def _run_agent(*, prompt: str, output_type: Optional[str], include_sources
 # ──────────────────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
-async def root() -> str:
+async def root() -> str:  # noqa: D401
     types_list = ", ".join(OUTPUT_MODELS)
     return f"""
     <!DOCTYPE html><html><head><title>Sales Intelligence Agent API</title><style>
@@ -232,8 +214,8 @@ async def root() -> str:
         pre,code{{background:#f4f4f4;padding:16px;border-radius:8px}}
     </style></head><body>
         <h1>Hello World 👋</h1><p>Welcome to the Sales‑Intelligence Agent API.</p>
-        <h2>Single query → POST /api</h2><pre><code>{{"company":"example.com","query":"…","outputType":"string","includeSources":true}}</code></pre>
-        <h2>Bulk query → POST /api/bulk</h2><pre><code>{{"companies":["a.com","b.com"],"query":"…","outputType":"dict","includeSources":true}}</code></pre>
+        <h2>Single query → POST /api</h2><pre><code>{{"company":"example.com","query":"…","outputType":"string"}}</code></pre>
+        <h2>Bulk query → POST /api/bulk</h2><pre><code>{{"companies":["a.com","b.com"],"query":"…","outputType":"dict"}}</code></pre>
         <h2>Health Check</h2><p><a href="/api/health">/api/health</a></p>
     </body></html>"""
 
@@ -241,11 +223,7 @@ async def root() -> str:
 @app.post("/api")
 async def process_query(req: QueryRequest):
     prompt = f"Company: {req.company} | Query: {req.query}"
-    return await _run_agent(
-        prompt=prompt,
-        output_type=req.output_type_normalised(),
-        include_sources=bool(req.includeSources),
-    )
+    return await _run_agent(prompt=prompt, output_type=req.output_type_normalised())
 
 
 @app.post("/api/bulk")
@@ -253,11 +231,7 @@ async def bulk_process(req: BulkQuery):
     async def handle(company: str):
         prompt = f"Company: {company} | Query: {req.query}"
         try:
-            return await _run_agent(
-                prompt=prompt,
-                output_type=req.output_type_normalised(),
-                include_sources=bool(req.includeSources),
-            ) | {"company": company}
+            return await _run_agent(prompt=prompt, output_type=req.output_type_normalised()) | {"company": company}
         except HTTPException as exc:
             return {"company": company, "error": exc.detail}
 
@@ -271,7 +245,7 @@ async def process_research_query(req: QueryRequest):
         from tools2 import researcher  # late import
         res = await researcher(req.company)
         return {"result": res}
-    except ImportError as exc:
+    except ImportError as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=f"Researcher tool missing: {exc}") from exc
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
