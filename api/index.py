@@ -222,6 +222,7 @@ async def root() -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 @app.post("/api")
 async def process_query(req: QueryRequest):
+    print("fuck de opps")
     prompt = f"Company: {req.company} | Query: {req.query}"
 
     # Route *all* requests through the Agent so tools are always available.
