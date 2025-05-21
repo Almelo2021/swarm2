@@ -18,9 +18,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 try:
     from agents import Agent, WebSearchTool, Runner
     from tools import (
-        #get_existing_leads,
+        get_existing_leads,
         search_hubspot_contacts,
-        #get_website_visits,
+        get_website_visits,
         get_crm_activities,
     )
 except ImportError as e:
@@ -125,9 +125,9 @@ if Agent is not None:
         model="gpt-4.1",
         tools=[
             WebSearchTool(),
-            #get_existing_leads,
+            get_existing_leads,
             search_hubspot_contacts,
-            #get_website_visits,
+            get_website_visits,
             get_crm_activities,
         ],
     )
@@ -234,13 +234,6 @@ async def process_query(req: QueryRequest):
 
     try:
         result = await Runner.run(agent, prompt)
-        
-        print(result.new_items)
-        print(result.last_agent)
-        print(result.raw_responses)
-        print(result._last_agent)
-        print("swen")
-        print(result.final_output)
         return {"result": result.final_output}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
