@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any, Type
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Type
 import asyncio
 import sys
 import os
@@ -39,28 +39,43 @@ class _BaseConfig:
     extra = "forbid"
 
 
-class IntegerOutput(BaseModel):
+class _SourcesMixin(BaseModel):
+    """Optional list of URLs or free‑text citations supporting the answer."""
+
+    sources: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "List of source URLs or citations that back up the answer. "
+            "Omit the field when no sources are available."
+        ),
+    )
+
+    class Config(_BaseConfig):
+        pass
+
+
+class IntegerOutput(_SourcesMixin):
     answer: int
 
     class Config(_BaseConfig):
         pass
 
 
-class FloatOutput(BaseModel):
+class FloatOutput(_SourcesMixin):
     answer: float
 
     class Config(_BaseConfig):
         pass
 
 
-class StringOutput(BaseModel):
+class StringOutput(_SourcesMixin):
     answer: str
 
     class Config(_BaseConfig):
         pass
 
 
-class StringListOutput(BaseModel):
+class StringListOutput(_SourcesMixin):
     answer: List[str]
 
     class Config(_BaseConfig):
@@ -75,7 +90,7 @@ class KVPair(BaseModel):
         pass
 
 
-class KVListOutput(BaseModel):
+class KVListOutput(_SourcesMixin):
     """Dictionary represented as a list of key/value string pairs."""
 
     answer: List[KVPair]
@@ -143,6 +158,7 @@ async def run_agent_structured(prompt: str, output_type: str):
     a strict Pydantic schema. If the returned JSON does not match, an HTTP 500
     is raised so the caller immediately sees the mismatch.
     """
+
     if not agent_initialized:
         raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
 
@@ -156,6 +172,7 @@ async def run_agent_structured(prompt: str, output_type: str):
     agent_prompt = (
         f"{prompt}\n\n"
         "When answering, respond ONLY with a JSON object that follows *exactly* the schema below.\n"
+        "Include the optional `sources` list whenever you can cite one or more URLs. If no sources are available you may omit the field.\n"
         "Do not add markdown code fences, do not include any explanatory text.\n"
         f"Schema:\n{schema_json}"
     )
