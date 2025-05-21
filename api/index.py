@@ -20,7 +20,7 @@ try:
     from tools import (
         #get_existing_leads,
         search_hubspot_contacts,
-        get_website_visits,
+        #get_website_visits,
         get_crm_activities,
     )
 except ImportError as e:
@@ -127,7 +127,7 @@ if Agent is not None:
             WebSearchTool(),
             #get_existing_leads,
             search_hubspot_contacts,
-            get_website_visits,
+            #get_website_visits,
             get_crm_activities,
         ],
     )
