@@ -18,7 +18,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 try:
     from agents import Agent, WebSearchTool, Runner
     from tools import (
-        #get_existing_leads,
+        get_existing_leads,
         search_hubspot_contacts,
         get_website_visits,
         get_crm_activities,
@@ -125,7 +125,7 @@ if Agent is not None:
         model="gpt-4.1",
         tools=[
             WebSearchTool(),
-            #get_existing_leads,
+            get_existing_leads,
             search_hubspot_contacts,
             get_website_visits,
             get_crm_activities,
@@ -222,7 +222,6 @@ async def root() -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 @app.post("/api")
 async def process_query(req: QueryRequest):
-    print("fuck de opps")
     prompt = f"Company: {req.company} | Query: {req.query}"
 
     # Route *all* requests through the Agent so tools are always available.
@@ -235,6 +234,7 @@ async def process_query(req: QueryRequest):
 
     try:
         result = await Runner.run(agent, prompt)
+        
         print(result.new_items)
         print(result.last_agent)
         print(result.raw_responses)
