@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any, Type
+import asyncio
 import sys
 import os
 from pathlib import Path
@@ -12,7 +13,6 @@ from openai import OpenAI
 # ──────────────────────────────────────────────────────────────────────────────
 #  Local imports & dynamic path handling
 # ──────────────────────────────────────────────────────────────────────────────
-# Allow `python -m uvicorn api.index:app --reload` from repo root
 sys.path.append(str(Path(__file__).parent.parent))
 
 try:
@@ -107,6 +107,15 @@ class QueryRequest(BaseModel):
         return self.outputType.lower() if self.outputType else None
 
 
+class BulkQuery(BaseModel):
+    companies: List[str]
+    query: str
+    outputType: Optional[str] = None
+
+    def output_type_normalised(self) -> Optional[str]:
+        return self.outputType.lower() if self.outputType else None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 #  Initialise Agent (if SDK present)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -148,13 +157,16 @@ async def root() -> str:
         <body>
             <h1>Hello World 👋</h1>
             <p>Welcome to the Sales Intelligence Agent API.</p>
-            <h2>POST /api</h2>
-            <p>Example payload:</p>
+            <h2>Single query → POST /api</h2>
+            <pre><code>{{"company": "example.com", "query": "…", "outputType": "string"}}</code></pre>
+
+            <h2>Bulk query → POST /api/bulk</h2>
             <pre><code>{{
-  "company": "example.com",
-  "query": "Name the last 3 US Presidents?",
+  "companies": ["a.com", "b.com"],
+  "query": "…",
   "outputType": "dict"  // optional – {types_list}
 }}</code></pre>
+
             <h2>Health Check</h2>
             <p><a href="/api/health">/api/health</a></p>
         </body>
@@ -186,39 +198,64 @@ async def run_structured_query(prompt: str, output_type: str):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  API endpoints
+#  Single‑company endpoint
 # ──────────────────────────────────────────────────────────────────────────────
 @app.post("/api")
 async def process_query(req: QueryRequest):
     prompt = f"Company: {req.company} | Query: {req.query}"
 
     if req.outputType:
-        print(f"Structured query → {req.outputType} for {req.company}")
         return {"result": await run_structured_query(prompt, req.output_type_normalised())}
 
     if not agent_initialized:
         raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
 
     try:
-        print(f"Agent query for {req.company}")
         result = await Runner.run(agent, prompt)
         return {"result": result.final_output}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+#  Bulk endpoint
+# ──────────────────────────────────────────────────────────────────────────────
+@app.post("/api/bulk")
+async def bulk_process(req: BulkQuery):
+    async def handle_company(company: str):
+        prompt = f"Company: {company} | Query: {req.query}"
+        try:
+            if req.outputType:
+                res = await run_structured_query(prompt, req.output_type_normalised())
+            else:
+                if not agent_initialized:
+                    raise RuntimeError("Agents SDK not initialised.")
+                res = (await Runner.run(agent, prompt)).final_output
+            return {"company": company, "result": res}
+        except Exception as exc:
+            return {"company": company, "error": str(exc)}
+
+    tasks = [handle_company(c) for c in req.companies]
+    results = await asyncio.gather(*tasks)
+    return {"results": results}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Researcher passthrough endpoint
+# ──────────────────────────────────────────────────────────────────────────────
 @app.post("/api/researcher")
 async def process_research_query(req: QueryRequest):
     try:
         from tools2 import researcher
-
-        print(f"Researcher query for {req.company}")
-        result = await researcher(req.company)
-        return {"result": result}
+        res = await researcher(req.company)
+        return {"result": res}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+#  Health check
+# ──────────────────────────────────────────────────────────────────────────────
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok", "agent_initialized": agent_initialized}
