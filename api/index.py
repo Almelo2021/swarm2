@@ -68,6 +68,13 @@ class FloatOutput(_SourcesMixin):
         pass
 
 
+class BooleanOutput(_SourcesMixin):
+    answer: bool
+
+    class Config(_BaseConfig):
+        pass
+
+
 class StringOutput(_SourcesMixin):
     answer: str
 
@@ -102,6 +109,7 @@ class KVListOutput(_SourcesMixin):
 OUTPUT_MODELS: Dict[str, Type[BaseModel]] = {
     "integer": IntegerOutput,
     "float": FloatOutput,
+    "boolean": BooleanOutput,
     "string": StringOutput,
     "string_list": StringListOutput,
     "dict": KVListOutput,
@@ -116,7 +124,7 @@ app = FastAPI()
 class QueryRequest(BaseModel):
     company: str
     query: str
-    outputType: Optional[str] = None  # e.g. "integer", "dict", ...
+    outputType: Optional[str] = None  # e.g. "integer", "dict", "boolean", ...
 
     def output_type_normalised(self) -> Optional[str]:
         return self.outputType.lower() if self.outputType else None
