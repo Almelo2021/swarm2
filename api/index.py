@@ -146,7 +146,7 @@ if Agent is not None:
     agent = Agent(
         name="Assistant",
         model="gpt-4.1",
-        model_settings=ModelSettings(temperature=0.2),
+        model_settings=ModelSettings(temperature=0.5),
         instructions="Always return the search phrases you used. \n\nTip: sometimes when you search for a company\"s vacancy for a webdesigner you find nothing, but when you search for their vacancies/careers page you find the webdesigner listing there.",
         tools=[
             WebSearchTool(),
