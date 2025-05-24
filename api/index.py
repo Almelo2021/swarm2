@@ -146,6 +146,10 @@ if Agent is not None:
     agent = Agent(
         name="Assistant",
         model="gpt-4.1",
+        model_kwargs={        # 👈 add this block
+            "temperature": 0.2,   # lower = more deterministic
+            # You can pass other options too, e.g. "top_p": 0.9
+        },
         instructions="Always return the search phrases you used.",
         tools=[
             WebSearchTool(),
