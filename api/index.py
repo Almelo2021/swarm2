@@ -181,7 +181,8 @@ async def run_agent_structured(prompt: str, model_cls: Type[BaseModel]):
         "\n\nWhen answering as a *string* you must:\n"
         "• Use plain text (no markdown headings, bold, lists, links).\n"
         "• Escape every newline as \\n (two characters).\n"
-        "• Do not start the string with a newline."
+        "• Do not start the string with a newline.\n\n"
+        "When asked for example for the link of a LinkedIn page, do not add superfluous text. Return the link and nothing more."
         if model_cls is StringOutput
         else ""
     )
