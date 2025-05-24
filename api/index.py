@@ -174,16 +174,36 @@ async def run_agent_structured(prompt: str, model_cls: Type[BaseModel]):
     """Run the agent with the requested structured output.
 
     We *clone* the pre‑configured base agent and override its `output_type` for
-    this specific request. Runner will automatically stop once the model emits
-    JSON that validates against that schema, and the tool loop has access to
+    this specific request. For primitive outputs such as plain strings we also
+    append an extra instruction that tells the model *exactly* how that string
+    should be encoded so the JSON remains valid (no un‑escaped newlines or
+    markdown headings).  Runner will automatically stop once the model emits
+    JSON that validates against the schema, and the tool loop has access to
     `WebSearchTool` (and other tools) beforehand, preventing hallucinations.
     """
 
     if not agent_initialized:
         raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
 
-    # Create a transient agent instance with per‑call output schema.
-    agent = base_agent.clone(output_type=model_cls)
+    extra_instr = ""
+    if model_cls is StringOutput:
+        # Guard against the model returning markdown blocks or literal newlines
+        # that break JSON parsing.  
+ is fine – literal line‑feeds are not.
+        extra_instr = (
+            "
+
+When answering as a *string* you must:
+"
+            "• Use plain text (no markdown headings, bold, lists, links).
+"
+            "• Escape every newline as \n (two characters).
+"
+            "• Do not start the string with a newline."  # avoids leading LF issues
+        )
+
+    # Create a transient agent instance with per‑call output schema + extra hints.
+    agent = base_agent.clone(output_type=model_cls, instructions=base_agent.instructions + extra_instr)
 
     try:
         result = await Runner.run(agent, prompt)
@@ -192,6 +212,8 @@ async def run_agent_structured(prompt: str, model_cls: Type[BaseModel]):
         if isinstance(final, BaseModel):
             return final.model_dump(mode="json")
         return final  # pragma: no cover – should be a dict already
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
 
