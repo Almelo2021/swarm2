@@ -146,6 +146,7 @@ if Agent is not None:
     agent = Agent(
         name="Assistant",
         model="gpt-4.1",
+        instructions="Always return the search phrases you used.",
         tools=[
             WebSearchTool(),
             get_existing_leads,
