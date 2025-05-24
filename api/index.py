@@ -7,7 +7,7 @@ import sys
 import os
 from pathlib import Path
 
-# Third-party
+# Third‑party
 from openai import OpenAI
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -24,6 +24,8 @@ try:
         get_crm_activities,
     )
 except ImportError as e:
+    # Falling back makes local development easier if the Agents SDK or tools
+    # are not present in the environment.
     print(f"Error importing agent components: {e}")
     Agent = WebSearchTool = Runner = None  # type: ignore
 
@@ -33,14 +35,14 @@ except ImportError as e:
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Structured-output Pydantic models
+#  Structured‑output Pydantic models
 # ──────────────────────────────────────────────────────────────────────────────
 class _BaseConfig:
     extra = "forbid"
 
 
 class _SourcesMixin(BaseModel):
-    """Optional list of URLs or free-text citations supporting the answer."""
+    """Optional list of URLs or free‑text citations supporting the answer."""
 
     sources: Optional[List[str]] = Field(
         default=None,
@@ -140,10 +142,10 @@ class BulkQuery(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Initialise Agent (if SDK present)
+#  Initialise base Agent (if SDK present)
 # ──────────────────────────────────────────────────────────────────────────────
 if Agent is not None:
-    agent = Agent(
+    base_agent = Agent(
         name="Assistant",
         model="gpt-4.1",
         model_settings=ModelSettings(temperature=0.5),
@@ -162,30 +164,34 @@ if Agent is not None:
     )
     agent_initialized = True
 else:
+    base_agent = None  # type: ignore
     agent_initialized = False
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Helper: agent-driven structured query using SDK validation
+#  Helper: agent‑driven structured query
 # ──────────────────────────────────────────────────────────────────────────────
 async def run_agent_structured(prompt: str, model_cls: Type[BaseModel]):
-    """Execute the agent with tool access and let the SDK validate the final
-    output against the provided Pydantic model class. If the agent fails to
-    produce valid JSON, Runner will raise and we propagate that as HTTP-500.
+    """Run the agent with the requested structured output.
+
+    We *clone* the pre‑configured base agent and override its `output_type` for
+    this specific request. Runner will automatically stop once the model emits
+    JSON that validates against that schema, and the tool loop has access to
+    `WebSearchTool` (and other tools) beforehand, preventing hallucinations.
     """
 
     if not agent_initialized:
         raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
 
-    try:
-        # Pass the desired output schema to Runner; it will ensure the final
-        # assistant message is an instance of `model_cls`.
-        result = await Runner.run(agent, prompt, output_type=model_cls)
-        final = result.final_output
+    # Create a transient agent instance with per‑call output schema.
+    agent = base_agent.clone(output_type=model_cls)
 
-        # `final` is already either a Pydantic model instance or a plain dict
+    try:
+        result = await Runner.run(agent, prompt)
+        final = result.final_output
+        # Runner guarantees final already matches model_cls.
         if isinstance(final, BaseModel):
             return final.model_dump(mode="json")
-        return final  # type: ignore[return-value]
+        return final  # pragma: no cover – should be a dict already
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
 
@@ -229,13 +235,13 @@ async def root() -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Single-company endpoint
+#  Single‑company endpoint
 # ──────────────────────────────────────────────────────────────────────────────
 @app.post("/api")
 async def process_query(req: QueryRequest):
     prompt = f"Company: {req.company} | Query: {req.query}"
 
-    # Structured requests: validate via Runner with dynamic schema
+    # Structured requests – validate via the cloned agent.
     if req.outputType:
         output_type_key = req.output_type_normalised()
         model_cls = OUTPUT_MODELS.get(output_type_key)
@@ -243,12 +249,12 @@ async def process_query(req: QueryRequest):
             raise HTTPException(status_code=400, detail=f"Unsupported outputType '{req.outputType}'.")
         return {"result": await run_agent_structured(prompt, model_cls)}
 
-    # Unstructured path – still routed through the agent
+    # Unstructured path – still routed through the base agent.
     if not agent_initialized:
         raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
 
     try:
-        result = await Runner.run(agent, prompt)
+        result = await Runner.run(base_agent, prompt)
         return {"result": result.final_output}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
@@ -271,7 +277,7 @@ async def bulk_process(req: BulkQuery):
             else:
                 if not agent_initialized:
                     raise RuntimeError("Agents SDK not initialised.")
-                res = (await Runner.run(agent, prompt)).final_output
+                res = (await Runner.run(base_agent, prompt)).final_output
             return {"company": company, "result": res}
         except Exception as exc:
             return {"company": company, "error": str(exc)}
