@@ -150,7 +150,7 @@ if Agent is not None:
         model="gpt-4.1",
         model_settings=ModelSettings(temperature=0.5),
         instructions=(
-            "Always return the search phrases you used.\n\n"
+            "Always log the search phrases you used.\n\n"
             "Tip: sometimes when you search for a company's vacancy for a webdesigner you find nothing, "
             "but when you search for their vacancies/careers page you find the webdesigner listing there."
         ),
