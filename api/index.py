@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Type
@@ -7,7 +7,7 @@ import sys
 import os
 from pathlib import Path
 
-# Third‑party
+# Third-party
 from openai import OpenAI
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -30,17 +30,17 @@ except ImportError as e:
 # ──────────────────────────────────────────────────────────────────────────────
 #  OpenAI client (reads key from ENV)
 # ──────────────────────────────────────────────────────────────────────────────
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # keep the client for future use
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Structured‑output Pydantic models
+#  Structured-output Pydantic models
 # ──────────────────────────────────────────────────────────────────────────────
 class _BaseConfig:
     extra = "forbid"
 
 
 class _SourcesMixin(BaseModel):
-    """Optional list of URLs or free‑text citations supporting the answer."""
+    """Optional list of URLs or free-text citations supporting the answer."""
 
     sources: Optional[List[str]] = Field(
         default=None,
@@ -147,7 +147,11 @@ if Agent is not None:
         name="Assistant",
         model="gpt-4.1",
         model_settings=ModelSettings(temperature=0.5),
-        instructions="Always return the search phrases you used. \n\nTip: sometimes when you search for a company\"s vacancy for a webdesigner you find nothing, but when you search for their vacancies/careers page you find the webdesigner listing there.",
+        instructions=(
+            "Always return the search phrases you used.\n\n"
+            "Tip: sometimes when you search for a company's vacancy for a webdesigner you find nothing, "
+            "but when you search for their vacancies/careers page you find the webdesigner listing there."
+        ),
         tools=[
             WebSearchTool(),
             get_existing_leads,
@@ -161,49 +165,29 @@ else:
     agent_initialized = False
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Helper: agent‑driven structured query
+#  Helper: agent-driven structured query using SDK validation
 # ──────────────────────────────────────────────────────────────────────────────
-async def run_agent_structured(prompt: str, output_type: str):
-    """Execute the agent *with* tool access and validate the final output against
-    a strict Pydantic schema. If the returned JSON does not match, an HTTP 500
-    is raised so the caller immediately sees the mismatch.
+async def run_agent_structured(prompt: str, model_cls: Type[BaseModel]):
+    """Execute the agent with tool access and let the SDK validate the final
+    output against the provided Pydantic model class. If the agent fails to
+    produce valid JSON, Runner will raise and we propagate that as HTTP-500.
     """
 
     if not agent_initialized:
         raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
 
-    model_cls = OUTPUT_MODELS.get(output_type)
-    if model_cls is None:
-        raise HTTPException(status_code=400, detail=f"Unsupported outputType '{output_type}'.")
-
-    # Tell the assistant to answer exclusively with JSON matching the schema.
-    schema_json = model_cls.schema_json(indent=2)
-
-    agent_prompt = (
-        f"{prompt}\n\n"
-        "When answering, respond ONLY with a JSON object that follows *exactly* the schema below.\n"
-        "Include the optional `sources` list whenever you can cite one or more URLs. If no sources are available you may omit the field.\n"
-        "Do not add markdown code fences, do not include any explanatory text.\n"
-        f"Schema:\n{schema_json}"
-    )
-
     try:
-        result = await Runner.run(agent, agent_prompt)
+        # Pass the desired output schema to Runner; it will ensure the final
+        # assistant message is an instance of `model_cls`.
+        result = await Runner.run(agent, prompt, output_type=model_cls)
+        final = result.final_output
+
+        # `final` is already either a Pydantic model instance or a plain dict
+        if isinstance(final, BaseModel):
+            return final.model_dump(mode="json")
+        return final  # type: ignore[return-value]
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
-
-    output_text = result.final_output.strip()
-
-    try:
-        parsed = model_cls.model_validate_json(output_text)
-        return parsed.model_dump(mode="json")
-    except Exception as exc:
-        # Provide visibility on what the model actually produced for easier debugging.
-        detail = (
-            "Structured response did not match the expected schema. "
-            f"Raw output was: {output_text}. Error: {exc}"
-        )
-        raise HTTPException(status_code=500, detail=detail) from exc
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -245,17 +229,21 @@ async def root() -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Single‑company endpoint
+#  Single-company endpoint
 # ──────────────────────────────────────────────────────────────────────────────
 @app.post("/api")
 async def process_query(req: QueryRequest):
     prompt = f"Company: {req.company} | Query: {req.query}"
 
-    # Route *all* requests through the Agent so tools are always available.
+    # Structured requests: validate via Runner with dynamic schema
     if req.outputType:
-        return {"result": await run_agent_structured(prompt, req.output_type_normalised())}
+        output_type_key = req.output_type_normalised()
+        model_cls = OUTPUT_MODELS.get(output_type_key)
+        if model_cls is None:
+            raise HTTPException(status_code=400, detail=f"Unsupported outputType '{req.outputType}'.")
+        return {"result": await run_agent_structured(prompt, model_cls)}
 
-    # Unstructured – we still use the agent but we do not validate the output.
+    # Unstructured path – still routed through the agent
     if not agent_initialized:
         raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
 
@@ -275,7 +263,11 @@ async def bulk_process(req: BulkQuery):
         prompt = f"Company: {company} | Query: {req.query}"
         try:
             if req.outputType:
-                res = await run_agent_structured(prompt, req.output_type_normalised())
+                output_type_key = req.output_type_normalised()
+                model_cls = OUTPUT_MODELS.get(output_type_key)
+                if model_cls is None:
+                    raise ValueError(f"Unsupported outputType '{req.outputType}'.")
+                res = await run_agent_structured(prompt, model_cls)
             else:
                 if not agent_initialized:
                     raise RuntimeError("Agents SDK not initialised.")
