@@ -17,12 +17,12 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 try:
     from agents import Agent, WebSearchTool, Runner, ModelSettings
-    from tools import (
+    #from tools import (
         #get_existing_leads,
         #search_hubspot_contacts,
         #get_website_visits,
-        get_crm_activities,
-    )
+        #get_crm_activities,
+    #)
 except ImportError as e:
     # Falling back makes local development easier if the Agents SDK or tools
     # are not present in the environment.
@@ -159,7 +159,7 @@ if Agent is not None:
             #get_existing_leads,
             #search_hubspot_contacts,
             #get_website_visits,
-            get_crm_activities,
+            #get_crm_activities,
         ],
     )
     agent_initialized = True
