@@ -18,9 +18,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 try:
     from agents import Agent, WebSearchTool, Runner, ModelSettings
     from tools import (
-        get_existing_leads,
-        search_hubspot_contacts,
-        get_website_visits,
+        #get_existing_leads,
+        #search_hubspot_contacts,
+        #get_website_visits,
         get_crm_activities,
     )
 except ImportError as e:
@@ -156,9 +156,9 @@ if Agent is not None:
         ),
         tools=[
             WebSearchTool(),
-            get_existing_leads,
-            search_hubspot_contacts,
-            get_website_visits,
+            #get_existing_leads,
+            #search_hubspot_contacts,
+            #get_website_visits,
             get_crm_activities,
         ],
     )
