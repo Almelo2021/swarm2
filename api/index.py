@@ -122,7 +122,7 @@ class KVListOutput(_SourcesMixin):
 # New models for the sheet endpoint
 class SheetRequest(BaseModel):
     query: str
-    model: Optional[str] = "openai:gpt-4o"
+    model: Optional[str] = "openai:gpt-4.1"
     max_search_results: Optional[int] = 2
 
     class Config(_BaseConfig):
@@ -292,7 +292,7 @@ async def root() -> str:
             <h2>LangGraph Chatbot → POST /api/sheet</h2>
             <pre><code>{{
   "query": "What is the weather like today?",
-  "model": "openai:gpt-4o",  // optional
+  "model": "openai:gpt-4.1",  // optional
   "max_search_results": 2    // optional
 }}</code></pre>
 
