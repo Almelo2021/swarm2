@@ -223,7 +223,7 @@ async def run_agent_structured(prompt: str, model_cls: Type[BaseModel]):
 # ──────────────────────────────────────────────────────────────────────────────
 #  Helper: run LangGraph chatbot
 # ──────────────────────────────────────────────────────────────────────────────
-async def run_graph_chatbot(query: str, model: str = "openai:gpt-4o", max_search_results: int = 2):
+async def run_graph_chatbot(query: str, model: str = "openai:gpt-4.1", max_search_results: int = 2):
     """Run the LangGraph chatbot with the given query."""
     
     if not graph_available:
@@ -372,7 +372,7 @@ async def process_sheet_query(req: SheetRequest):
     try:
         result = await run_graph_chatbot(
             query=req.query,
-            model=req.model or "openai:gpt-4o",
+            model=req.model or "openai:gpt-4.1",
             max_search_results=req.max_search_results or 2
         )
         return result
