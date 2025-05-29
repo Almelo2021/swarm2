@@ -29,6 +29,17 @@ except ImportError as e:
     print(f"Error importing agent components: {e}")
     Agent = WebSearchTool = Runner = None  # type: ignore
 
+# Import the LangGraph chatbot
+try:
+    from graph import graph, format_final_output
+    from langchain_core.messages import HumanMessage
+    graph_available = True
+except ImportError as e:
+    print(f"Error importing graph: {e}")
+    graph = None
+    format_final_output = None
+    graph_available = False
+
 # ──────────────────────────────────────────────────────────────────────────────
 #  OpenAI client (reads key from ENV)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -103,6 +114,16 @@ class KVListOutput(_SourcesMixin):
     """Dictionary represented as a list of key/value string pairs."""
 
     answer: List[KVPair]
+
+    class Config(_BaseConfig):
+        pass
+
+
+# New models for the sheet endpoint
+class SheetRequest(BaseModel):
+    query: str
+    model: Optional[str] = "openai:gpt-4o"
+    max_search_results: Optional[int] = 2
 
     class Config(_BaseConfig):
         pass
@@ -200,6 +221,44 @@ async def run_agent_structured(prompt: str, model_cls: Type[BaseModel]):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+#  Helper: run LangGraph chatbot
+# ──────────────────────────────────────────────────────────────────────────────
+async def run_graph_chatbot(query: str, model: str = "openai:gpt-4o", max_search_results: int = 2):
+    """Run the LangGraph chatbot with the given query."""
+    
+    if not graph_available:
+        raise HTTPException(status_code=500, detail="LangGraph chatbot not available.")
+    
+    try:
+        # Create the initial state with the user's message
+        initial_state = {
+            "messages": [HumanMessage(content=query)]
+        }
+        
+        # Configuration for the graph
+        config = {
+            "configurable": {
+                "model": model,
+                "max_search_results": max_search_results
+            }
+        }
+        
+        # Run the graph
+        final_state = await asyncio.get_event_loop().run_in_executor(
+            None, 
+            lambda: graph.invoke(initial_state, config)
+        )
+        
+        # Format the output
+        formatted_output = format_final_output(final_state)
+        
+        return formatted_output
+        
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Graph processing error: {exc}") from exc
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 #  Landing page
 # ──────────────────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
@@ -228,6 +287,13 @@ async def root() -> str:
   "companies": ["a.com", "b.com"],
   "query": "…",
   "outputType": "dict"  // optional – {types_list}
+}}</code></pre>
+
+            <h2>LangGraph Chatbot → POST /api/sheet</h2>
+            <pre><code>{{
+  "query": "What is the weather like today?",
+  "model": "openai:gpt-4o",  // optional
+  "max_search_results": 2    // optional
 }}</code></pre>
 
             <h2>Health Check</h2>
@@ -291,6 +357,31 @@ async def bulk_process(req: BulkQuery):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+#  LangGraph Chatbot endpoint
+# ──────────────────────────────────────────────────────────────────────────────
+@app.post("/api/sheet")
+async def process_sheet_query(req: SheetRequest):
+    """Process a query using the LangGraph chatbot with web search capabilities."""
+    
+    if not graph_available:
+        raise HTTPException(
+            status_code=500, 
+            detail="LangGraph chatbot not available. Make sure graph.py is properly configured."
+        )
+    
+    try:
+        result = await run_graph_chatbot(
+            query=req.query,
+            model=req.model or "openai:gpt-4o",
+            max_search_results=req.max_search_results or 2
+        )
+        return result
+        
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Sheet processing error: {exc}") from exc
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 #  Researcher passthrough endpoint
 # ──────────────────────────────────────────────────────────────────────────────
 @app.post("/api/researcher")
@@ -308,7 +399,11 @@ async def process_research_query(req: QueryRequest):
 # ──────────────────────────────────────────────────────────────────────────────
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "agent_initialized": agent_initialized}
+    return {
+        "status": "ok", 
+        "agent_initialized": agent_initialized,
+        "graph_available": graph_available
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
