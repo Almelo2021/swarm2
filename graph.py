@@ -65,6 +65,8 @@ def create_graph() -> StateGraph:
         """Chatbot node that handles conversation and decides on tool usage."""
         configuration = config.get("configurable", {})
         model_name = configuration.get("model", "openai:gpt-4.1")
+        print(model_name)
+        print(configuration)
         max_results = configuration.get("max_search_results", 2)
         
         # Initialize LLM
@@ -232,6 +234,7 @@ Format your response as JSON with these exact keys:
 
 def format_final_output(final_state: State) -> dict:
     """Format the final state into the desired JSON structure."""
+    print("formatting...")
     end_time = time.time()
     start_time = final_state.get("start_time", end_time)
     time_taken = round(end_time - start_time, 2)
