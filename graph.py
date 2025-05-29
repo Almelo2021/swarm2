@@ -62,6 +62,7 @@ def create_graph() -> StateGraph:
         }
     
     def chatbot(state: State, config: RunnableConfig):
+        print("chatbot")
         """Chatbot node that handles conversation and decides on tool usage."""
         configuration = config.get("configurable", {})
         model_name = configuration.get("model", "openai:gpt-4.1")
@@ -134,6 +135,7 @@ def create_graph() -> StateGraph:
     
     def should_continue(state: State) -> Literal["tools", "finalize"]:
         """Determine if we should continue with tools or finalize."""
+        print("should_continue")
         last_message = state["messages"][-1]
         
         # If the last message has tool calls, go to tools
@@ -144,6 +146,7 @@ def create_graph() -> StateGraph:
         return "finalize"
     
     def finalize_response(state: State, config: RunnableConfig) -> State:
+        print("finalize_response")
         """Generate final structured response."""
         configuration = config.get("configurable", {})
         model_name = configuration.get("model", "openai:gpt-4.1")
