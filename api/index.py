@@ -380,6 +380,34 @@ async def process_sheet_query(req: SheetRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Sheet processing error: {exc}") from exc
 
+class SheetBulkRequest(BaseModel):
+    queries: List[str]
+    model: str | None = "openai:gpt-4.1"
+    max_search_results: int | None = 2
+    max_concurrency: int | None = 4          # new
+
+async def run_graph_chatbot_bulk(req: SheetBulkRequest):
+    states = [{"messages": [HumanMessage(content=q)]} for q in req.queries]
+    config = {
+        "configurable": {
+            "model": req.model,
+            "max_search_results": req.max_search_results,
+        },
+        "max_concurrency": req.max_concurrency,
+    }
+    # abatch is non-blocking; no executor needed
+    final_states = await graph.abatch(states, config=config)
+    return [format_final_output(s) for s in final_states]
+
+@app.post("/api/sheet/bulk")
+async def sheet_bulk(req: SheetBulkRequest):
+    try:
+        results = await run_graph_chatbot_bulk(req)
+        return {"results": results}
+    except Exception as exc:
+        raise HTTPException(500, f"Sheet bulk error: {exc}")
+
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Researcher passthrough endpoint
