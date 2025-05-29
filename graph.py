@@ -296,7 +296,7 @@ async def run_graph_batch(
 
     # abatch preserves order and runs inside the current event loop
     final_states: List[State] = await graph.abatch(states, config=base_config)
-    return [format_final_output(s) for s in final_states]
+    return final_states
 
 
 def run_graph_batch_sync(
