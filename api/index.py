@@ -252,7 +252,7 @@ async def run_graph_chatbot(query: str, model: str = "openai:gpt-4.1", max_searc
         # Format the output
         formatted_output = format_final_output(final_state)
         
-        return formatted_output
+        return final_state
         
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Graph processing error: {exc}") from exc
