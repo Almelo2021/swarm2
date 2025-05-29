@@ -4,3 +4,10 @@ fastapi
 uvicorn
 pydantic
 requests
+
+# LangGraph and LangChain dependencies
+langgraph
+langchain
+langchain-core
+langchain-tavily
+langchain-openai
