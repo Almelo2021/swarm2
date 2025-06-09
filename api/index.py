@@ -9,6 +9,7 @@ from pathlib import Path
 
 # Third‑party
 from openai import OpenAI
+from lister3 import main as extract_companies
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Local imports & dynamic path handling
@@ -51,7 +52,9 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 class _BaseConfig:
     extra = "forbid"
 
-
+class ExtractListRequest(BaseModel):
+    url: str
+    
 class _SourcesMixin(BaseModel):
     """Optional list of URLs or free‑text citations supporting the answer."""
 
@@ -420,6 +423,18 @@ async def process_research_query(req: QueryRequest):
         return {"result": res}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
+
+
+
+@app.post("/api/extractlist")
+async def extract_list(req: ExtractListRequest):
+    try:
+        companies = await asyncio.get_event_loop().run_in_executor(
+            None, extract_companies, req.url
+        )
+        return {"companies": companies, "count": len(companies)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Extract list error: {exc}") from exc
 
 
 # ──────────────────────────────────────────────────────────────────────────────
