@@ -11,3 +11,5 @@ langchain
 langchain-core
 langchain-tavily
 langchain-openai
+
+bs4
