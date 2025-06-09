@@ -18,10 +18,10 @@ def scrape_page(url):
     response.raise_for_status()
     
     # Save HTML
-    filename = url.split('/')[-1] + '.html'
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write(response.text)
-    print(f"HTML saved to {filename}")
+    #filename = url.split('/')[-1] + '.html'
+    #with open(filename, 'w', encoding='utf-8') as f:
+        #f.write(response.text)
+    #print(f"HTML saved to {filename}")
     
     return response.text
 
@@ -223,9 +223,9 @@ def analyze_structure(html_content):
     visible_html = get_visible_html(soup)
     
     # Save for debugging
-    with open('visible_structure.html', 'w', encoding='utf-8') as f:
-        f.write(visible_html)
-    print("Visible HTML structure saved to visible_structure.html")
+    #with open('visible_structure.html', 'w', encoding='utf-8') as f:
+        #f.write(visible_html)
+    #print("Visible HTML structure saved to visible_structure.html")
 
     prompt = f"""
 Analyze this webpage content and return ONLY a regex pattern to extract company names:
@@ -299,7 +299,7 @@ def main(url):
     if strategy_response and "scrape_domains" in strategy_response:
         print("\nScraping domains...")
         companies = scrape_domains(html, url)
-        save_to_csv(companies, "zdomains.csv")
+        #save_to_csv(companies, "zdomains.csv")
         return companies
     elif strategy_response and "analyze_structure" in strategy_response:
         print("\nAnalyzing structure...")
@@ -308,7 +308,7 @@ def main(url):
         if pattern != "FAILED":
             print(f"\nExtracting companies with pattern: {pattern}")
             companies = extract_with_regex(html, pattern)
-            save_to_csv(companies, "zcompanies.csv")
+            #save_to_csv(companies, "zcompanies.csv")
             return companies
         else:
             print("Structure analysis failed")
