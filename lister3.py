@@ -14,7 +14,9 @@ load_dotenv()
 def scrape_page(url):
     """Scrape HTML and save to file"""
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    response = requests.get(url, headers=headers)
+    
+    # Disable SSL verification
+    response = requests.get(url, headers=headers, verify=False)
     response.raise_for_status()
     
     # Save HTML
