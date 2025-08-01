@@ -7,7 +7,7 @@ from openai import OpenAI
 
 load_dotenv()
 
-def research_company_for_sales(target_url: str, company_context: List[Dict]) -> Dict[str, Any]:
+async def research_company_for_sales(target_url: str, company_context: List[Dict]) -> Dict[str, Any]:
     """
     Research a target company using OpenAI's Agents SDK with real web search
     and generate sales angles based on your company context
@@ -112,7 +112,7 @@ def research_company_for_sales(target_url: str, company_context: List[Dict]) -> 
     
     try:
         # Run the research agent
-        result = Runner.run_sync(research_agent, research_prompt)
+        result = await Runner.run(research_agent, research_prompt)
         
         # Extract the JSON from the agent's response
         response_text = result.final_output
