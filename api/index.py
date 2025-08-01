@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Type
+from typing import List, Optional, Dict, Type, Any
 import asyncio
 import sys
 import os
@@ -425,11 +425,15 @@ async def process_research_query(req: QueryRequest):
         raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
     
 
+class AIResearchRequest(BaseModel):
+    target_url: str
+    company_context: List[Dict[str, Any]]
+
 @app.post("/api/airesearch")
-async def ai_research_block(req: QueryRequest):
+async def ai_research_block(req: AIResearchRequest):
     try:
         from bliksem3 import research_company_for_sales
-        res = await research_company_for_sales(req.target_url, req.company_context)
+        res = await asyncio.to_thread(research_company_for_sales, req.target_url, req.company_context)
         return {"result": res}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
