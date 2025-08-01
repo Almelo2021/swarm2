@@ -423,6 +423,16 @@ async def process_research_query(req: QueryRequest):
         return {"result": res}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
+    
+
+@app.post("/api/airesearch")
+async def ai_research_block(req: QueryRequest):
+    try:
+        from bliksem3 import research_company_for_sales
+        res = await research_company_for_sales(req.target_url, req.company_context)
+        return {"result": res}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
 
 
 
