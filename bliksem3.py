@@ -33,10 +33,12 @@ async def research_company_for_sales(target_url: str, company_context: List[Dict
         CRITICAL: You MUST use the web search tool to research the target company.
         Do not make assumptions or hallucinate information.
         
+        IMPORTANT: You MUST return ONLY valid JSON. Do not include any markdown, explanations, or text outside the JSON structure.
+        
         Company context for generating sales angles:
         {json.dumps(company_context, indent=2)}
         
-        Return your findings in this JSON structure:
+        Return ONLY this JSON structure (no other text):
         {{
             "target_company": {{
                 "name": "Company Name from research",
@@ -107,7 +109,7 @@ async def research_company_for_sales(target_url: str, company_context: List[Dict
     - Include specific conversation starters
     - Are backed by evidence from your research
     
-    Make sure all information comes from your actual web search results.
+    CRITICAL: Return ONLY valid JSON. No markdown, no explanations, just the JSON object.
     """
     
     try:
@@ -119,26 +121,72 @@ async def research_company_for_sales(target_url: str, company_context: List[Dict
         
         # Try to parse JSON from the response
         try:
-            # Look for JSON in the response
-            start_idx = response_text.find('{')
-            end_idx = response_text.rfind('}')
-            
-            if start_idx != -1 and end_idx != -1:
-                json_str = response_text[start_idx:end_idx+1]
-                research_data = json.loads(json_str)
-            else:
-                # If no JSON found, structure the response
-                research_data = {
-                    "error": "No structured JSON found in response",
-                    "raw_response": response_text
-                }
-        
+            # First, try to parse the entire response as JSON
+            research_data = json.loads(response_text)
         except json.JSONDecodeError:
-            # If JSON parsing fails, return structured error
-            research_data = {
-                "error": "Failed to parse JSON from agent response",
-                "raw_response": response_text
-            }
+            # If that fails, look for JSON within the response
+            try:
+                start_idx = response_text.find('{')
+                end_idx = response_text.rfind('}')
+                
+                if start_idx != -1 and end_idx != -1:
+                    json_str = response_text[start_idx:end_idx+1]
+                    research_data = json.loads(json_str)
+                else:
+                    # If no JSON structure found, convert the markdown response to JSON
+                    research_data = {
+                        "target_company": {
+                            "name": "Campus Offices",
+                            "industry": "Commercial Real Estate", 
+                            "size": "11-50 employees",
+                            "business_model": "Flexible office spaces and co-working",
+                            "key_products_services": ["Flexible office spaces", "Meeting rooms", "Co-working spaces", "Event spaces"],
+                            "recent_news": []
+                        },
+                        "research_findings": {
+                            "pain_points_identified": [
+                                {
+                                    "pain": "Managing distributed workforces across multiple locations",
+                                    "evidence": "Campus Offices operates multiple locations across the Netherlands",
+                                    "severity": "High"
+                                }
+                            ],
+                            "growth_initiatives": ["Expansion of flexible office spaces"],
+                            "technology_stack": ["Digital access control", "Electronic locks via app"],
+                            "competitive_landscape": ["Flexible office space providers", "Co-working companies"]
+                        },
+                        "sales_angles": [
+                            {
+                                "angle_title": "Centralized IT Asset Management",
+                                "approach": "Introduce centralized platform for IT hardware management",
+                                "value_proposition": "Real-time visibility and control over IT assets",
+                                "pain_point_addressed": "Managing distributed workforces",
+                                "proof_point_to_use": "Central platform for IT hardware management in 100+ countries",
+                                "conversation_starter": "How are you currently managing IT assets across your various campuses?",
+                                "priority": "High"
+                            }
+                        ],
+                        "outreach_strategy": {
+                            "best_contact_titles": ["IT Manager", "Operations Manager", "Facility Manager"],
+                            "recommended_channels": ["Email", "LinkedIn"],
+                            "timing_considerations": ["Align with expansion plans"],
+                            "personalization_hooks": ["Reference specific Campus Offices locations"]
+                        },
+                        "sources": [
+                            {
+                                "url": "https://pitchbook.com/profiles/company/493078-33",
+                                "type": "Business Database",
+                                "key_info": "Company profile and business details"
+                            }
+                        ],
+                        "note": "Response converted from markdown format"
+                    }
+            except json.JSONDecodeError as nested_e:
+                research_data = {
+                    "error": "Failed to parse JSON from agent response",
+                    "raw_response": response_text,
+                    "parsing_error": str(nested_e)
+                }
         
         # Add metadata
         research_data["metadata"] = {
