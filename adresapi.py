@@ -7,6 +7,69 @@ import time
 from googlesearch import search
 import re
 
+def is_valid_address(address_text):
+        """Validate if extracted text is likely a real business address."""
+        normalized = address_text.lower().strip()
+        
+        
+        # Must contain some address-like elements
+        has_number = bool(re.search(r'\d+', normalized))
+        has_postal = bool(re.search(r'\d{4}\s*[a-z]{2}|\d{5}(?:-\d{4})?', normalized))
+        has_street_words = bool(re.search(r'(street|str|avenue|ave|road|rd|lane|ln|drive|dr|way|straat|laan|weg)', normalized))
+        
+        # Filter out obvious non-addresses
+        exclude_patterns = [
+            r'\d{4}-\d{4}',  # Years or phone numbers
+            r'^\d+\s*$',     # Just numbers
+            r'(email|phone|tel|fax)',  # Contact info headers
+            r'(copyright|©|\d{4}\s*all rights)',  # Copyright text
+        ]
+        
+        for pattern in exclude_patterns:
+            if re.search(pattern, normalized):
+                return False
+        
+        # Must have either postal code or street indicators and numbers
+        return (has_postal or (has_street_words and has_number)) and len(normalized.split()) >= 3
+
+def extract_addresses_from_text(text):
+        """Extract potential addresses from webpage text."""
+        addresses = []
+        
+        # Common address patterns
+        address_patterns = [
+            # Dutch addresses: Street Number, Postal City
+            r'([a-zA-Z\s]+\d+[a-zA-Z]?(?:\s*[-,]\s*\d{4}\s*[a-zA-Z]{2}\s*[a-zA-Z\s]+)?)',
+            # Generic street + number patterns
+            r'(\d+\s+[a-zA-Z\s]+(?:street|str|avenue|ave|road|rd|lane|ln|drive|dr|way|blvd|boulevard))',
+            # Postal codes with surrounding text
+            r'([a-zA-Z\s,]+\d{4}\s*[a-zA-Z]{2}[a-zA-Z\s,]*)',
+            r'([a-zA-Z\s,]+\d{5}(?:-\d{4})?[a-zA-Z\s,]*)',
+        ]
+        
+        for pattern in address_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                potential_address = match.group(1).strip()
+                if len(potential_address) > 10 and len(potential_address) < 200:  # Reasonable length
+                    if(is_valid_address(potential_address)):
+                        addresses.append(potential_address)
+        
+        # Look for structured address indicators
+        address_indicators = [
+            r'(?:address|adres|located at|office|headquarters|bezoekadres|postadres)[\s:]+([^\n\r]{10,100})',
+            r'(?:visit us|bezoek ons)[\s:]+([^\n\r]{10,100})',
+        ]
+        
+        for indicator in address_indicators:
+            matches = re.finditer(indicator, text, re.IGNORECASE)
+            for match in matches:
+                potential_address = match.group(1).strip()
+                if(is_valid_address(potential_address)):
+                        addresses.append(potential_address)
+        
+        return list(set(addresses))  # Remove duplicates
+
 def track_company_address_change(company_name, domain, address):
     """
     Track when a company's address changed on their website using Wayback Machine.
@@ -374,8 +437,14 @@ def track_company_address_change(company_name, domain, address):
                         print(f"Geanalyseerd: {timestamp} - Adres aanwezig: True (meerdere delen in blok)")
                         return True
             
-            print(f"Geanalyseerd: {timestamp} - Adres aanwezig: False")
-            return False
+            # Check if there are any other addresses on the page
+            others = extract_addresses_from_text(page_text)
+            if others:
+                print(f"Geanalyseerd: {timestamp} - Adres aanwezig: False (andere adressen gevonden: {others})")
+                return False
+            else:
+                print(f"Geanalyseerd: {timestamp} - Geen andere adressen gevonden in deze snapshot.")
+                return "no_address"  # Special return value for snapshots with no address at all
             
         except requests.exceptions.RequestException as e:
             print(f"Fout bij ophalen van snapshot {timestamp}: {e}")
@@ -409,7 +478,7 @@ def track_company_address_change(company_name, domain, address):
         
         address_present = has_address(timestamp)
         
-        if address_present is not None:
+        if address_present is not None and address_present != "no_address":
             all_results.append((timestamp, address_present))
             consecutive_errors = 0  # Reset error counter on success
             
@@ -430,7 +499,7 @@ def track_company_address_change(company_name, domain, address):
                     new_timestamp = snapshots[new_idx][0]
                     if new_timestamp not in failed_snapshots:
                         new_result = has_address(new_timestamp)
-                        if new_result is not None:
+                        if new_result is not None and new_result != "no_address":
                             all_results.append((new_timestamp, new_result))
                             timestamp = new_timestamp
                             address_present = new_result
@@ -451,6 +520,18 @@ def track_company_address_change(company_name, domain, address):
                     else:
                         right = mid - 1
                     continue
+        
+        # Skip snapshots with no address at all for determining transition points
+        if address_present == "no_address":
+            # Don't use this snapshot for determining transition, but continue search
+            if right - left <= 1:
+                break
+            # Try adjacent snapshots
+            if mid + 1 <= right:
+                left = mid + 1
+            else:
+                right = mid - 1
+            continue
         
         if address_present:
             if first_with_address is None or timestamp < first_with_address:
@@ -500,15 +581,16 @@ def track_company_address_change(company_name, domain, address):
                 # Skip if this snapshot has already been analyzed or has failed
                 if not any(timestamp == t for t, _ in all_results) and timestamp not in failed_snapshots:
                     address_present = has_address(timestamp)
-                    if address_present is not None:
+                    if address_present is not None and address_present != "no_address":
                         all_results.append((timestamp, address_present))
                         
                         if address_present and (first_with_address is None or timestamp < first_with_address):
                             first_with_address = timestamp
                         elif not address_present and (last_no_address is None or timestamp > last_no_address):
                             last_no_address = timestamp
-                    else:
+                    elif address_present is None:
                         failed_snapshots.add(timestamp)
+                    # If address_present == "no_address", we simply skip it
         
         all_results.sort(key=lambda x: x[0])
         
@@ -570,9 +652,9 @@ def track_company_address_change(company_name, domain, address):
 # Example usage:
 if __name__ == "__main__":
     # Example function call
-    company_name = "Entweder"
-    domain = "entweder.vc"
-    address = "Brugstraat"
+    company_name = "Heerze + Nieland"
+    domain = "heerzenieland.nl"
+    address = "Hulsmaatstraat 60, 7523 WG Enschede, Netherlands"
 
     last_no_address_date, first_with_address_date = track_company_address_change(company_name, domain, address)
     
