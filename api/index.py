@@ -426,7 +426,7 @@ async def process_research_query(req: QueryRequest):
 
 
 @app.post("/api/adresapi")
-async def process_research_query(req: QueryRequest):
+async def process_adresapi(req: QueryRequest):
     try:
         res = await track_company_address_change(req.company_name, req.domain, req.address)
         return {"result": res}
