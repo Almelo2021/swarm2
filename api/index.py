@@ -425,8 +425,13 @@ async def process_research_query(req: QueryRequest):
         raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
 
 
+class AdresRequest(BaseModel):
+    company_name: str
+    domain: str
+    address: str
+    
 @app.post("/api/adresapi")
-async def process_adresapi(req: QueryRequest):
+async def process_adresapi(req: AdresRequest):
     try:
         res = await track_company_address_change(req.company_name, req.domain, req.address)
         return {"result": res}
