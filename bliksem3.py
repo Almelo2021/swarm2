@@ -86,7 +86,6 @@ async def research_company_for_sales(target_url: str, company_context: List[Dict
             ]
         }}
         """,
-        model="gpt-5-nano",
         tools=[WebSearchTool()]
     )
     
