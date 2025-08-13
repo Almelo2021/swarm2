@@ -1,494 +1,684 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Type, Any
-import asyncio
-import sys
-import os
-from pathlib import Path
+import requests
+import json
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from bs4 import BeautifulSoup
+import time
+from googlesearch import search
+import re
 
-# Third‑party
-from openai import OpenAI
-from lister3 import main as extract_companies
-from adresapi import track_company_address_change
-# ──────────────────────────────────────────────────────────────────────────────
-#  Local imports & dynamic path handling
-# ──────────────────────────────────────────────────────────────────────────────
-sys.path.append(str(Path(__file__).parent.parent))
 
-try:
-    from agents import Agent, WebSearchTool, Runner, ModelSettings
-    #from tools import (
-        #get_existing_leads,
-        #search_hubspot_contacts,
-        #get_website_visits,
-        #get_crm_activities,
-    #)
-except ImportError as e:
-    # Falling back makes local development easier if the Agents SDK or tools
-    # are not present in the environment.
-    print(f"Error importing agent components: {e}")
-    Agent = WebSearchTool = Runner = None  # type: ignore
+def load_dutch_towns():
+    """Load Dutch towns from JSON file."""
+    with open('dutch_towns.json', 'r', encoding='utf-8') as f:
+        return set(json.load(f))
 
-# Import the LangGraph chatbot
-try:
-    from graph import graph, format_final_output
-    from langchain_core.messages import HumanMessage
-    graph_available = True
-except ImportError as e:
-    print(f"Error importing graph: {e}")
-    graph = None
-    format_final_output = None
-    graph_available = False
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  OpenAI client (reads key from ENV)
-# ──────────────────────────────────────────────────────────────────────────────
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  Structured‑output Pydantic models
-# ──────────────────────────────────────────────────────────────────────────────
-class _BaseConfig:
-    extra = "forbid"
-
-class ExtractListRequest(BaseModel):
-    url: str
+def contains_dutch_town(text):
+    """Check if text contains any Dutch town names."""
+    towns_set = load_dutch_towns()
     
-class _SourcesMixin(BaseModel):
-    """Optional list of URLs or free‑text citations supporting the answer."""
-
-    sources: Optional[List[str]] = Field(
-        default=None,
-        description=(
-            "List of source URLs or citations that back up the answer. "
-            "Omit the field when no sources are available."
-        ),
-    )
-
-    class Config(_BaseConfig):
-        pass
-
-
-class IntegerOutput(_SourcesMixin):
-    answer: int
-
-    class Config(_BaseConfig):
-        pass
-
-
-class FloatOutput(_SourcesMixin):
-    answer: float
-
-    class Config(_BaseConfig):
-        pass
-
-
-class BooleanOutput(_SourcesMixin):
-    answer: bool
-
-    class Config(_BaseConfig):
-        pass
-
-
-class StringOutput(_SourcesMixin):
-    answer: str
-
-    class Config(_BaseConfig):
-        pass
-
-
-class StringListOutput(_SourcesMixin):
-    answer: List[str]
-
-    class Config(_BaseConfig):
-        pass
-
-
-class KVPair(BaseModel):
-    key: str
-    value: str  # keep values as strings to satisfy strict schema rules
-
-    class Config(_BaseConfig):
-        pass
-
-
-class KVListOutput(_SourcesMixin):
-    """Dictionary represented as a list of key/value string pairs."""
-
-    answer: List[KVPair]
-
-    class Config(_BaseConfig):
-        pass
-
-
-# New models for the sheet endpoint
-class SheetRequest(BaseModel):
-    query: str
-    model: Optional[str] = "openai:gpt-4.1"
-    max_search_results: Optional[int] = 2
-
-    class Config(_BaseConfig):
-        pass
-
-
-OUTPUT_MODELS: Dict[str, Type[BaseModel]] = {
-    "integer": IntegerOutput,
-    "float": FloatOutput,
-    "boolean": BooleanOutput,
-    "string": StringOutput,
-    "string_list": StringListOutput,
-    "dict": KVListOutput,
-}
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  FastAPI setup
-# ──────────────────────────────────────────────────────────────────────────────
-app = FastAPI()
-
-
-class QueryRequest(BaseModel):
-    company: str
-    query: str
-    outputType: Optional[str] = None  # e.g. "integer", "dict", "boolean", ...
-
-    def output_type_normalised(self) -> Optional[str]:
-        return self.outputType.lower() if self.outputType else None
-
-
-class BulkQuery(BaseModel):
-    companies: List[str]
-    query: str
-    outputType: Optional[str] = None
-
-    def output_type_normalised(self) -> Optional[str]:
-        return self.outputType.lower() if self.outputType else None
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  Initialise base Agent (if SDK present)
-# ──────────────────────────────────────────────────────────────────────────────
-if Agent is not None:
-    base_agent = Agent(
-        name="Assistant",
-        model="gpt-4.1",
-        model_settings=ModelSettings(temperature=0.5),
-        instructions=(
-            "Always log the search phrases you used.\n\n"
-            "Tip: sometimes when you search for a company's vacancy for a webdesigner you find nothing, "
-            "but when you search for their vacancies/careers page you find the webdesigner listing there."
-        ),
-        tools=[
-            WebSearchTool(),
-            #get_existing_leads,
-            #search_hubspot_contacts,
-            #get_website_visits,
-            #get_crm_activities,
-        ],
-    )
-    agent_initialized = True
-else:
-    base_agent = None  # type: ignore
-    agent_initialized = False
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  Helper: agent‑driven structured query
-# ──────────────────────────────────────────────────────────────────────────────
-async def run_agent_structured(prompt: str, model_cls: Type[BaseModel]):
-    """Run the agent and ensure the final output matches `model_cls`."""
-
-    if not agent_initialized:
-        raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
-
-    # Add extra formatting guardrails only for plain‑string responses.
-    extra_instr = (
-        "\n\nWhen answering as a *string* you must:\n"
-        "• Use plain text (no markdown headings, bold, lists, links).\n"
-        "• Escape every newline as \\n (two characters).\n"
-        "• Do not start the string with a newline.\n\n"
-        "When asked for example for the link of a LinkedIn page, do not add superfluous text. Return the link and nothing more."
-        if model_cls is StringOutput
-        else ""
-    )
-
-    agent = base_agent.clone(output_type=model_cls, instructions=base_agent.instructions + extra_instr)
-
-    try:
-        result = await Runner.run(agent, prompt)
-        final = result.final_output
-        if isinstance(final, BaseModel):
-            return final.model_dump(mode="json")
-        return final
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  Helper: run LangGraph chatbot
-# ──────────────────────────────────────────────────────────────────────────────
-async def run_graph_chatbot(query: str, model: str = "openai:gpt-4.1", max_search_results: int = 2):
-    """Run the LangGraph chatbot with the given query."""
+    found_towns = []
+    text_lower = text.lower()
     
-    if not graph_available:
-        raise HTTPException(status_code=500, detail="LangGraph chatbot not available.")
+    for town in towns_set:
+        pattern = r'\b' + re.escape(town.lower()) + r'\b'
+        if re.search(pattern, text_lower):
+            found_towns.append(town)
     
-    try:
-        # Create the initial state with the user's message
-        initial_state = {
-            "messages": [HumanMessage(content=query)]
-        }
+    return len(found_towns) > 0
+
+def is_valid_address(address_text):
+        """Validate if extracted text is likely a real business address."""
+        normalized = address_text.lower().strip()
         
-        # Configuration for the graph
-        config = {
-            "configurable": {
-                "model": model,
-                "max_search_results": max_search_results
-            }
-        }
         
-        # Run the graph
-        final_state = await asyncio.get_event_loop().run_in_executor(
-            None, 
-            lambda: graph.invoke(initial_state, config)
-        )
+        # Must contain some address-like elements
+        has_number = bool(re.search(r'\d+', normalized))
+        has_postal = bool(re.search(r'\d{4}\s*[a-z]{2}|\d{5}(?:-\d{4})?', normalized))
+        has_street_words = bool(re.search(r'(street|str|avenue|ave|road|rd|lane|ln|drive|dr|way|straat|laan|weg)', normalized))
         
-        # Format the output
-        formatted_output = format_final_output(final_state)
+        # Filter out obvious non-addresses
+        exclude_patterns = [
+            r'\d{4}-\d{4}',  # Years or phone numbers
+            r'^\d+\s*$',     # Just numbers
+            r'(email|phone|tel|fax)',  # Contact info headers
+            r'(copyright|©|\d{4}\s*all rights)',  # Copyright text
+        ]
         
-        return final_state
+        for pattern in exclude_patterns:
+            if re.search(pattern, normalized):
+                return False
         
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Graph processing error: {exc}") from exc
+        # Must have either postal code or street indicators and numbers
+        return (has_postal or (has_street_words and has_number)) and len(normalized.split()) >= 3
 
+def extract_addresses_from_text(text):
+        """Extract potential addresses from webpage text."""
+        addresses = []
+        
+        # Common address patterns
+        address_patterns = [
+            # Dutch addresses: Street Number, Postal City
+            r'([a-zA-Z\s]+\d+[a-zA-Z]?(?:\s*[-,]\s*\d{4}\s*[a-zA-Z]{2}\s*[a-zA-Z\s]+)?)',
+            # Generic street + number patterns
+            r'(\d+\s+[a-zA-Z\s]+(?:street|str|avenue|ave|road|rd|lane|ln|drive|dr|way|blvd|boulevard))',
+            # Postal codes with surrounding text
+            r'([a-zA-Z\s,]+\d{4}\s*[a-zA-Z]{2}[a-zA-Z\s,]*)',
+            r'([a-zA-Z\s,]+\d{5}(?:-\d{4})?[a-zA-Z\s,]*)',
+        ]
+        
+        for pattern in address_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                potential_address = match.group(1).strip()
+                if len(potential_address) > 10 and len(potential_address) < 200:  # Reasonable length
+                    if(is_valid_address(potential_address)) & contains_dutch_town(potential_address):
+                        addresses.append(potential_address)
+        
+        # Look for structured address indicators
+        address_indicators = [
+            r'(?:address|adres|located at|office|headquarters|bezoekadres|postadres)[\s:]+([^\n\r]{10,100})',
+            r'(?:visit us|bezoek ons)[\s:]+([^\n\r]{10,100})',
+        ]
+        
+        for indicator in address_indicators:
+            matches = re.finditer(indicator, text, re.IGNORECASE)
+            for match in matches:
+                potential_address = match.group(1).strip()
+                if(is_valid_address(potential_address)) & contains_dutch_town(potential_address):
+                        addresses.append(potential_address)
+        
+        return list(set(addresses))  # Remove duplicates
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  Landing page
-# ──────────────────────────────────────────────────────────────────────────────
-@app.get("/", response_class=HTMLResponse)
-async def root() -> str:
-    types_list = ", ".join(OUTPUT_MODELS.keys())
-
-    return f"""
-    <!DOCTYPE html>
-    <html>
-        <head>
-            <title>Sales Intelligence Agent API</title>
-            <style>
-                body{{font-family:Arial,Helvetica,sans-serif;max-width:800px;margin:40px auto;line-height:1.6}}
-                pre{{background:#f4f4f4;padding:16px;border-radius:8px}}
-                code{{background:#e7e7e7;padding:2px 4px;border-radius:4px}}
-            </style>
-        </head>
-        <body>
-            <h1>Hello World 👋</h1>
-            <p>Welcome to the Sales Intelligence Agent API.</p>
-            <h2>Single query → POST /api</h2>
-            <pre><code>{{"company": "example.com", "query": "…", "outputType": "string"}}</code></pre>
-
-            <h2>Bulk query → POST /api/bulk</h2>
-            <pre><code>{{
-  "companies": ["a.com", "b.com"],
-  "query": "…",
-  "outputType": "dict"  // optional – {types_list}
-}}</code></pre>
-
-            <h2>LangGraph Chatbot → POST /api/sheet</h2>
-            <pre><code>{{
-  "query": "What is the weather like today?",
-  "model": "openai:gpt-4.1",  // optional
-  "max_search_results": 2    // optional
-}}</code></pre>
-
-            <h2>Health Check</h2>
-            <p><a href="/api/health">/api/health</a></p>
-        </body>
-    </html>
+def track_company_address_change(company_name, domain, address):
     """
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  Single‑company endpoint
-# ──────────────────────────────────────────────────────────────────────────────
-@app.post("/api")
-async def process_query(req: QueryRequest):
-    prompt = f"Company: {req.company} | Query: {req.query}"
-
-    # Structured requests – validate via the cloned agent.
-    if req.outputType:
-        output_type_key = req.output_type_normalised()
-        model_cls = OUTPUT_MODELS.get(output_type_key)
-        if model_cls is None:
-            raise HTTPException(status_code=400, detail=f"Unsupported outputType '{req.outputType}'.")
-        return {"result": await run_agent_structured(prompt, model_cls)}
-
-    # Unstructured path – still routed through the base agent.
-    if not agent_initialized:
-        raise HTTPException(status_code=500, detail="Agents SDK not initialised.")
-
-    try:
-        result = await Runner.run(base_agent, prompt)
-        return {"result": result.final_output}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Agent processing error: {exc}") from exc
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  Bulk endpoint
-# ──────────────────────────────────────────────────────────────────────────────
-@app.post("/api/bulk")
-async def bulk_process(req: BulkQuery):
-    async def handle_company(company: str):
-        prompt = f"Company: {company} | Query: {req.query}"
-        try:
-            if req.outputType:
-                output_type_key = req.output_type_normalised()
-                model_cls = OUTPUT_MODELS.get(output_type_key)
-                if model_cls is None:
-                    raise ValueError(f"Unsupported outputType '{req.outputType}'.")
-                res = await run_agent_structured(prompt, model_cls)
-            else:
-                if not agent_initialized:
-                    raise RuntimeError("Agents SDK not initialised.")
-                res = (await Runner.run(base_agent, prompt)).final_output
-            return {"company": company, "result": res}
-        except Exception as exc:
-            return {"company": company, "error": str(exc)}
-
-    tasks = [handle_company(c) for c in req.companies]
-    results = await asyncio.gather(*tasks)
-    return {"results": results}
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  LangGraph Chatbot endpoint
-# ──────────────────────────────────────────────────────────────────────────────
-@app.post("/api/sheet")
-async def process_sheet_query(req: SheetRequest):
-    """Process a query using the LangGraph chatbot with web search capabilities."""
+    Track when a company's address changed on their website using Wayback Machine.
     
-    if not graph_available:
-        raise HTTPException(
-            status_code=500, 
-            detail="LangGraph chatbot not available. Make sure graph.py is properly configured."
-        )
-    
-    try:
-        result = await run_graph_chatbot(
-            query=req.query,
-            model=req.model or "openai:gpt-4.1",
-            max_search_results=req.max_search_results or 2
-        )
-        return result
+    Args:
+        company_name (str): Name of the company
+        domain (str): Website domain (e.g., 'example.com')
+        address (str): Current address to search for
         
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Sheet processing error: {exc}") from exc
-
-class SheetBulkRequest(BaseModel):
-    queries: List[str]
-    model: str | None = "openai:gpt-4.1"
-    max_search_results: int | None = 2
-    max_concurrency: int | None = 4          # new
-
-async def run_graph_chatbot_bulk(req: SheetBulkRequest):
-    states = [{"messages": [HumanMessage(content=q)]} for q in req.queries]
-    config = {
-        "configurable": {
-            "model": req.model,
-            "max_search_results": req.max_search_results,
-        },
-        "max_concurrency": req.max_concurrency,
-    }
-    # abatch is non-blocking; no executor needed
-    final_states = await graph.abatch(states, config=config)
-    return [format_final_output(s) for s in final_states]
-
-@app.post("/api/sheet/bulk")
-async def sheet_bulk(req: SheetBulkRequest):
-    try:
-        results = await run_graph_chatbot_bulk(req)
-        return {"results": results}
-    except Exception as exc:
-        raise HTTPException(500, f"Sheet bulk error: {exc}")
-
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  Researcher passthrough endpoint
-# ──────────────────────────────────────────────────────────────────────────────
-@app.post("/api/researcher")
-async def process_research_query(req: QueryRequest):
-    try:
-        from tools2 import researcher
-        res = await researcher(req.company)
-        return {"result": res}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
-
-
-class AdresRequest(BaseModel):
-    company_name: str
-    domain: str
-    address: str
+    Returns:
+        tuple: (last_no_address_date, first_with_address_date) or (None, None) if not found
+               Dates are in YYYY-MM-DD format
+    """
     
-@app.post("/api/adresapi")
-async def process_adresapi(req: AdresRequest):
-    try:
-        # Run the synchronous function in a thread pool
-        loop = asyncio.get_event_loop()
-        res = await loop.run_in_executor(
-            None, 
-            track_company_address_change, 
-            req.company_name, 
-            req.domain, 
-            req.address
-        )
-        return {"result": res}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
+    def google_search(domain, query, num_results=10):
+        """Simple Google search within a specific domain."""
+        domain = domain.replace('www.', '')
+        search_query = f"site:{domain} {query}"
+        print(f"Zoeken via Google: {search_query}")
+        
+        try:
+            results = list(search(search_query, num_results=num_results, advanced=True))
+            formatted_results = []
+            for result in results:
+                if hasattr(result, 'url') and result.url:
+                    formatted_results.append({
+                        'url': result.url,
+                        'title': result.title or "No title available",
+                        'description': result.description or "No description available"
+                    })
+            
+            print(f"Gevonden: {len(formatted_results)} resultaten")
+            return formatted_results
+            
+        except Exception as e:
+            print(f"Fout bij Google zoeken: {e}")
+            return []
 
+    def normalize_address(address):
+        """Normalize an address by standardizing format and extracting key components."""
+        normalized = address.lower().strip()
+        
+        # Extract postal/zip code with regex
+        postal_code = None
+        postal_patterns = [
+            r'\b\d{4}\s*[a-z]{2}\b',  # Dutch format: 1234 AB
+            r'\b[a-z]\d[a-z]\s*\d[a-z]\d\b',  # Canadian format: A1A 1A1
+            r'\b\d{5}(?:-\d{4})?\b'  # US format: 12345 or 12345-6789
+        ]
+        
+        for pattern in postal_patterns:
+            match = re.search(pattern, normalized)
+            if match:
+                postal_code = match.group(0)
+                break
+        
+        # Extract street number and name
+        clean_address = re.sub(r'[,:]', ' ', normalized)
+        parts = clean_address.split()
+        
+        number_candidates = [part for part in parts if part.isdigit() or (part and part[0].isdigit() and part[-1].isalpha())]
+        word_candidates = [part for part in parts if not part.isdigit() and len(part) > 1 and part not in ['st', 'rd', 'nd', 'th']]
+        
+        street_name = None
+        street_number = None
+        
+        if number_candidates and word_candidates:
+            street_number = number_candidates[0]
+            street_words = []
+            for word in word_candidates:
+                if word not in ['apt', 'unit', 'suite', 'floor', 'department']:
+                    street_words.append(word)
+            
+            if street_words:
+                street_name = ' '.join(street_words)
+        
+        return {
+            'full': normalized,
+            'postal_code': postal_code,
+            'street_name': street_name,
+            'street_number': street_number,
+            'parts': parts
+        }
 
-class AIResearchRequest(BaseModel):
-    target_url: str
-    company_context: List[Dict[str, Any]]
+    def find_contact_page(domain, adres):
+        """Find the contact page of a domain with improved address detection."""
+        print(f"Zoeken naar contactpagina voor domein: {domain}")
+        
+        domain = domain.replace('www.', '')
+        address_info = normalize_address(adres)
+        print(f"Genormaliseerd adres: {address_info}")
+        
+        adres_clean = adres.lower().strip()
+        
+        # Standard contact pages to try
+        standard_pages = [
+            f"https://{domain}/",
+            f"https://{domain}/contact",
+            f"https://{domain}/contactus",
+            f"https://{domain}/contact-us",
+            f"https://{domain}/over-ons",
+            f"https://{domain}/about-us",
+            f"https://{domain}/about",
+            f"https://{domain}/locatie",
+            f"https://{domain}/location",
+            f"https://{domain}/contactgegevens",
+            f"https://{domain}/nl/contact",
+            f"https://{domain}/en/contact",
+            f"https://{domain}/wie-zijn-wij",
+            f"https://{domain}/over-ons/contact",
+            f"https://{domain}/nl/over-ons",
+            f"https://{domain}/en/about-us",
+            f"https://{domain}/contact-opnemen",
+            f"https://{domain}/adres"
+        ]
+        
+        # Try www. versions
+        www_domain = f"www.{domain}"
+        for page in [f"https://{www_domain}/", f"https://{www_domain}/contact"]:
+            if page not in standard_pages:
+                standard_pages.append(page)
+        
+        session = requests.Session()
+        retries = Retry(total=2, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
+        session.mount("https://", HTTPAdapter(max_retries=retries))
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        session.headers.update(headers)
+        
+        def check_for_address(html_content):
+            """Check if the address is present on the page."""
+            soup = BeautifulSoup(html_content, "html.parser")
+            page_text = soup.get_text().lower()
+            
+            # Method 1: Check for exact address
+            if adres_clean in page_text:
+                print("Adres gevonden: exacte match")
+                return True
+                
+            # Method 2: Check for street name and number in different orders
+            if address_info['street_name'] and address_info['street_number']:
+                pattern1 = f"{address_info['street_name']}\\s*{address_info['street_number']}"
+                pattern2 = f"{address_info['street_number']}\\s*{address_info['street_name']}"
+                
+                if (re.search(pattern1, page_text) or re.search(pattern2, page_text)):
+                    print(f"Adres gevonden: straatnaam en nummer match")
+                    return True
+            
+            # Method 3: Check if postal code is present along with street name
+            if address_info['postal_code'] and address_info['street_name']:
+                postal_pattern = re.escape(address_info['postal_code'])
+                street_pattern = re.escape(address_info['street_name'])
+                
+                if re.search(postal_pattern, page_text) and re.search(street_pattern, page_text):
+                    postal_pos = page_text.find(address_info['postal_code'])
+                    street_pos = page_text.find(address_info['street_name'])
+                    
+                    if abs(postal_pos - street_pos) < 100:
+                        print(f"Adres gevonden: postcode en straatnaam binnen nabije tekst")
+                        return True
+            
+            # Method 4: Check for key parts in address blocks
+            address_blocks = []
+            for tag in soup.find_all(['p', 'div', 'span', 'address']):
+                tag_text = tag.get_text().lower().strip()
+                if len(tag_text) > 0 and any(part in tag_text for part in address_info['parts'] if len(part) > 1):
+                    address_blocks.append(tag_text)
+            
+            for block in address_blocks:
+                if address_info['street_name'] and address_info['street_number']:
+                    if address_info['street_name'] in block and address_info['street_number'] in block:
+                        print(f"Adres gevonden: straatnaam en nummer in hetzelfde tekstblok")
+                        return True
+                
+                significant_parts = [part for part in address_info['parts'] if len(part) > 2]
+                if len(significant_parts) >= 2:
+                    matches = sum(1 for part in significant_parts if part in block)
+                    if matches >= 2:
+                        print(f"Adres gevonden: meerdere delen in hetzelfde tekstblok")
+                        return True
+            
+            return False
+        
+        # Try standard contact pages first
+        for page in standard_pages:
+            try:
+                print(f"Proberen: {page}")
+                response = session.get(page, timeout=15)
+                if response.status_code == 200:
+                    if check_for_address(response.content):
+                        print(f"Contactpagina gevonden: {page}")
+                        return page
+            except requests.exceptions.RequestException as e:
+                print(f"Fout bij ophalen van {page}: {e}")
+                continue
+        
+        # If standard pages don't work, use Google search
+        try:
+            print("Standaard pagina's niet gevonden, zoeken via Google...")
+            
+            search_queries = ["contact"]
+            if address_info['street_name']:
+                search_queries.append(address_info['street_name'])
+            if address_info['postal_code']:
+                search_queries.append(address_info['postal_code'])
+            if address_info['street_name'] and address_info['street_number']:
+                search_queries.append(f"{address_info['street_name']} {address_info['street_number']}")
+                search_queries.append(f"{address_info['street_number']} {address_info['street_name']}")
+            search_queries.append(adres_clean)
+            
+            search_queries = list(set(search_queries))
+            
+            for query in search_queries:
+                try:
+                    print(f"Google zoeken: {query}")
+                    results = google_search(domain, query, num_results=5)
+                    
+                    for result in results:
+                        url = result['url']
+                        if domain in url.replace('www.', ''):
+                            try:
+                                response = session.get(url, timeout=15)
+                                if response.status_code == 200:
+                                    if check_for_address(response.content):
+                                        print(f"Contactpagina gevonden via Google: {url}")
+                                        return url
+                            except requests.exceptions.RequestException:
+                                continue
+                except Exception as e:
+                    print(f"Fout bij Google zoekopdracht '{query}': {e}")
+                    continue
+                    
+        except Exception as e:
+            print(f"Fout bij zoeken via Google: {e}")
+        
+        # Last resort: search through all links on main page
+        try:
+            main_url = f"https://{domain}"
+            try:
+                response = session.get(main_url, timeout=15)
+            except:
+                main_url = f"https://www.{domain}"
+                response = session.get(main_url, timeout=15)
+                
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, "html.parser")
+                
+                if check_for_address(response.content):
+                    print(f"Adres gevonden op hoofdpagina: {main_url}")
+                    return main_url
+                    
+                contact_links = []
+                for link in soup.find_all('a', href=True):
+                    href = link.get('href')
+                    link_text = link.get_text().lower()
+                    
+                    if any(keyword in link_text for keyword in ['contact', 'over ons', 'about', 'locatie', 'adres', 'location']):
+                        if href.startswith('/'):
+                            href = f"{main_url}{href}"
+                        elif not href.startswith(('http://', 'https://')):
+                            href = f"{main_url}/{href}"
+                        
+                        if domain in href.replace('www.', '') and href not in contact_links:
+                            contact_links.append(href)
+                
+                for link in contact_links:
+                    try:
+                        response = session.get(link, timeout=15)
+                        if response.status_code == 200:
+                            if check_for_address(response.content):
+                                print(f"Adres gevonden op pagina: {link}")
+                                return link
+                    except:
+                        continue
+                        
+        except requests.exceptions.RequestException as e:
+            print(f"Fout bij doorzoeken van de website: {e}")
+        
+        print("Geen pagina gevonden met het opgegeven adres.")
+        return None
 
-@app.post("/api/airesearch")
-async def ai_research_block(req: AIResearchRequest):
-    try:
-        from bliksem3 import research_company_for_sales
-        res = await research_company_for_sales(req.target_url, req.company_context)
-        return {"result": res}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
-
-
-
-@app.post("/api/extractlist")
-async def extract_list(req: ExtractListRequest):
-    try:
-        companies = await asyncio.get_event_loop().run_in_executor(
-            None, extract_companies, req.url
-        )
-        return {"companies": companies, "count": len(companies)}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Extract list error: {exc}") from exc
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  Health check
-# ──────────────────────────────────────────────────────────────────────────────
-@app.get("/api/health")
-async def health_check():
-    return {
-        "status": "ok", 
-        "agent_initialized": agent_initialized,
-        "graph_available": graph_available
+    print(f"\n---------- Verwerken van {company_name} ({domain}) ----------")
+    print(f"Zoeken naar adres: {address}")
+    
+    # Remove www. from domain if present
+    domain = domain.replace('www.', '')
+    
+    # Step 1: Find the relevant page
+    url = find_contact_page(domain, address)
+    if not url:
+        print("Kan geen pagina vinden met het opgegeven adres. Script wordt gestopt.")
+        return None, None
+    
+    # Set up session with retries for Wayback Machine requests
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+    session.mount("https://", HTTPAdapter(max_retries=retries))
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
+    session.headers.update(headers)
+
+    # Step 2: Get snapshots via CDX API
+    cdx_url = f"https://web.archive.org/cdx/search/cdx?url={url}&output=json&fl=timestamp,original&limit=1000"
+    try:
+        response = session.get(cdx_url, timeout=30)
+        response.raise_for_status()
+        all_data = json.loads(response.text)
+        if len(all_data) <= 1:
+            print(f"Geen snapshots gevonden voor URL: {url}")
+            return None, None
+        
+        snapshots = sorted(all_data[1:], key=lambda x: x[0])
+        print(f"Snapshots succesvol opgehaald: {len(snapshots)} snapshots")
+    except requests.exceptions.RequestException as e:
+        print(f"Fout bij het ophalen van CDX-data: {e}")
+        return None, None
+
+    # Normalize address for better detection
+    address_info = normalize_address(address)
+
+    def has_address(timestamp):
+        """Check if the address is present in a specific Wayback Machine snapshot."""
+        wayback_url = f"https://web.archive.org/web/{timestamp}/{url}"
+        try:
+            page = session.get(wayback_url, timeout=30, headers=headers)
+            page.raise_for_status()
+            soup = BeautifulSoup(page.content, "html.parser")
+            page_text = soup.get_text().lower()
+            
+            # Method 1: Check for exact address
+            if address_info['full'] in page_text:
+                print(f"Geanalyseerd: {timestamp} - Adres aanwezig: True (exacte match)")
+                return True
+                
+            # Method 2: Check for street name and number in different orders
+            if address_info['street_name'] and address_info['street_number']:
+                pattern1 = f"{address_info['street_name']}\\s*{address_info['street_number']}"
+                pattern2 = f"{address_info['street_number']}\\s*{address_info['street_name']}"
+                
+                if (re.search(pattern1, page_text) or re.search(pattern2, page_text)):
+                    print(f"Geanalyseerd: {timestamp} - Adres aanwezig: True (straatnaam/nummer match)")
+                    return True
+            
+            # Method 3: Check for key parts in address blocks
+            address_blocks = []
+            for tag in soup.find_all(['p', 'div', 'span', 'address']):
+                tag_text = tag.get_text().lower().strip()
+                if len(tag_text) > 0 and any(part in tag_text for part in address_info['parts'] if len(part) > 1):
+                    address_blocks.append(tag_text)
+            
+            for block in address_blocks:
+                if address_info['street_name'] and address_info['street_number']:
+                    if address_info['street_name'] in block and address_info['street_number'] in block:
+                        print(f"Geanalyseerd: {timestamp} - Adres aanwezig: True (in tekstblok)")
+                        return True
+                
+                significant_parts = [part for part in address_info['parts'] if len(part) > 2]
+                if len(significant_parts) >= 2:
+                    matches = sum(1 for part in significant_parts if part in block)
+                    if matches >= 2:
+                        print(f"Geanalyseerd: {timestamp} - Adres aanwezig: True (meerdere delen in blok)")
+                        return True
+            
+            # Check if there are any other addresses on the page
+            others = extract_addresses_from_text(page_text)
+            if others:
+                print(f"Geanalyseerd: {timestamp} - Adres aanwezig: False (andere adressen gevonden: {others})")
+                return False
+            else:
+                print(f"Geanalyseerd: {timestamp} - Geen andere adressen gevonden in deze snapshot.")
+                return "no_address"  # Special return value for snapshots with no address at all
+            
+        except requests.exceptions.RequestException as e:
+            print(f"Fout bij ophalen van snapshot {timestamp}: {e}")
+            return None
+
+    # Binary search to find the transition point
+    all_results = []
+    left, right = 0, len(snapshots) - 1
+    last_no_address = None
+    first_with_address = None
+    failed_snapshots = set()  # Track snapshots that consistently fail
+    max_consecutive_errors = 5
+    consecutive_errors = 0
+
+    while left <= right:
+        mid = (left + right) // 2
+        timestamp = snapshots[mid][0]
+        
+        # Skip if this snapshot has already failed multiple times
+        if timestamp in failed_snapshots:
+            # Move to adjacent snapshot
+            if mid + 1 <= right:
+                mid = mid + 1
+                timestamp = snapshots[mid][0]
+            elif mid - 1 >= left:
+                mid = mid - 1
+                timestamp = snapshots[mid][0]
+            else:
+                # No more snapshots to try in this range
+                break
+        
+        address_present = has_address(timestamp)
+        
+        if address_present is not None and address_present != "no_address":
+            all_results.append((timestamp, address_present))
+            consecutive_errors = 0  # Reset error counter on success
+            
+        if address_present is None:
+            consecutive_errors += 1
+            failed_snapshots.add(timestamp)
+            
+            # If we've had too many consecutive errors, exit binary search
+            if consecutive_errors >= max_consecutive_errors:
+                print("Te veel opeenvolgende fouten bij het ophalen van snapshots. Overschakelen naar steekproef methode...")
+                break
+            
+            # Try to find a working snapshot nearby
+            continue_search = False
+            for offset in [1, -1, 2, -2, 3, -3]:
+                new_idx = mid + offset
+                if 0 <= new_idx < len(snapshots):
+                    new_timestamp = snapshots[new_idx][0]
+                    if new_timestamp not in failed_snapshots:
+                        new_result = has_address(new_timestamp)
+                        if new_result is not None and new_result != "no_address":
+                            all_results.append((new_timestamp, new_result))
+                            timestamp = new_timestamp
+                            address_present = new_result
+                            consecutive_errors = 0
+                            continue_search = True
+                            break
+                        else:
+                            failed_snapshots.add(new_timestamp)
+            
+            if not continue_search:
+                # Skip this range and continue
+                if right - left <= 2:
+                    break
+                else:
+                    # Narrow the search range to avoid this problematic area
+                    if mid - left < right - mid:
+                        left = mid + 1
+                    else:
+                        right = mid - 1
+                    continue
+        
+        # Skip snapshots with no address at all for determining transition points
+        if address_present == "no_address":
+            # Don't use this snapshot for determining transition, but continue search
+            if right - left <= 1:
+                break
+            # Try adjacent snapshots
+            if mid + 1 <= right:
+                left = mid + 1
+            else:
+                right = mid - 1
+            continue
+        
+        if address_present:
+            if first_with_address is None or timestamp < first_with_address:
+                first_with_address = timestamp
+            right = mid - 1
+        else:
+            if last_no_address is None or timestamp > last_no_address:
+                last_no_address = timestamp
+            left = mid + 1
+
+    # Verify and correct results with all collected data
+    all_results.sort(key=lambda x: x[0])
+    
+    # Find the latest 'False' before the first 'True'
+    if first_with_address is not None:
+        latest_false_before_true = None
+        for timestamp, result in all_results:
+            if not result and (latest_false_before_true is None or timestamp > latest_false_before_true) and timestamp < first_with_address:
+                latest_false_before_true = timestamp
+        
+        if latest_false_before_true is not None:
+            last_no_address = latest_false_before_true
+    
+    # Find the first 'True' after the last 'False'
+    if last_no_address is not None:
+        earliest_true_after_false = None
+        for timestamp, result in all_results:
+            if result and (earliest_true_after_false is None or timestamp < earliest_true_after_false) and timestamp > last_no_address:
+                earliest_true_after_false = timestamp
+        
+        if earliest_true_after_false is not None:
+            first_with_address = earliest_true_after_false
+
+    # If binary search is incomplete, check a few additional snapshots
+    if (last_no_address is None or first_with_address is None) and len(snapshots) > 0:
+        print("Binair zoeken onvolledig. Enkele aanvullende snapshots controleren...")
+        
+        sample_indices = [0, len(snapshots)-1]
+        if len(snapshots) > 2:
+            sample_indices.append(len(snapshots) // 4)
+            sample_indices.append(len(snapshots) // 2)
+            sample_indices.append(3 * len(snapshots) // 4)
+        
+        for idx in sample_indices:
+            if idx >= 0 and idx < len(snapshots):
+                timestamp = snapshots[idx][0]
+                # Skip if this snapshot has already been analyzed or has failed
+                if not any(timestamp == t for t, _ in all_results) and timestamp not in failed_snapshots:
+                    address_present = has_address(timestamp)
+                    if address_present is not None and address_present != "no_address":
+                        all_results.append((timestamp, address_present))
+                        
+                        if address_present and (first_with_address is None or timestamp < first_with_address):
+                            first_with_address = timestamp
+                        elif not address_present and (last_no_address is None or timestamp > last_no_address):
+                            last_no_address = timestamp
+                    elif address_present is None:
+                        failed_snapshots.add(timestamp)
+                    # If address_present == "no_address", we simply skip it
+        
+        all_results.sort(key=lambda x: x[0])
+        
+        if last_no_address is None:
+            for timestamp, result in all_results:
+                if not result:
+                    last_no_address = timestamp
+        
+        if first_with_address is None:
+            for timestamp, result in all_results:
+                if result:
+                    first_with_address = timestamp
+                    break
+
+    # Step 4: Results
+    if last_no_address and first_with_address:
+        # Ensure correct chronological order
+        if last_no_address > first_with_address:
+            correct_last_no = None
+            for timestamp, result in all_results:
+                if not result and timestamp < first_with_address:
+                    if correct_last_no is None or timestamp > correct_last_no:
+                        correct_last_no = timestamp
+            
+            if correct_last_no:
+                last_no_address = correct_last_no
+        
+        last_no_address_date = f"{last_no_address[:4]}-{last_no_address[4:6]}-{last_no_address[6:8]}"
+        first_with_address_date = f"{first_with_address[:4]}-{first_with_address[4:6]}-{first_with_address[6:8]}"
+        
+        print(f"\nLaatste snapshot zonder huidig adres: {last_no_address} ({last_no_address_date})")
+        print(f"Eerste snapshot met huidig adres: {first_with_address} ({first_with_address_date})")
+        print(f"Verhuisrange: tussen {last_no_address_date} en {first_with_address_date}")
+        
+        return last_no_address_date, first_with_address_date
+    else:
+        # Special case: check for True snapshots before 2022 and in 2024/2025
+        true_before_2022 = None
+        true_in_2024_2025 = None
+        
+        for timestamp, result in all_results:
+            if result:
+                year = int(timestamp[:4])
+                if year < 2022 and (true_before_2022 is None or timestamp < true_before_2022):
+                    true_before_2022 = timestamp
+                if (year >= 2024) and (true_in_2024_2025 is None or timestamp < true_in_2024_2025):
+                    true_in_2024_2025 = timestamp
+        
+        if true_before_2022 and true_in_2024_2025:
+            oldest_true_date = f"{true_before_2022[:4]}-{true_before_2022[4:6]}-{true_before_2022[6:8]}"
+            print(f"\nSpeciaal geval: adres gevonden in snapshot van voor 2022 ({oldest_true_date}) en in 2024/2025")
+            print(f"Verhuisrange: tussen 1-1-2000 en {oldest_true_date}")
+            return "2000-01-01", oldest_true_date
+        else:
+            print("\nNiet genoeg data om een verhuisrange te bepalen. Mogelijk is het adres niet gevonden of zijn er te weinig snapshots.")
+            return None, None
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  Local dev entry point
-# ──────────────────────────────────────────────────────────────────────────────
+# Example usage:
 if __name__ == "__main__":
-    import uvicorn
+    # Example function call
+    company_name = "Heerze + Nieland"
+    domain = "heerzenieland.nl"
+    address = "Hulsmaatstraat 60, 7523 WG Enschede, Netherlands"
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    last_no_address_date, first_with_address_date = track_company_address_change(company_name, domain, address)
+    
+    if last_no_address_date and first_with_address_date:
+        print(f"\nResult: Address change occurred between {last_no_address_date} and {first_with_address_date}")
+    else:
+        print("\nNo address change period could be determined.")
