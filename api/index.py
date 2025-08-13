@@ -433,11 +433,18 @@ class AdresRequest(BaseModel):
 @app.post("/api/adresapi")
 async def process_adresapi(req: AdresRequest):
     try:
-        res = await track_company_address_change(req.company_name, req.domain, req.address)
+        # Run the synchronous function in a thread pool
+        loop = asyncio.get_event_loop()
+        res = await loop.run_in_executor(
+            None, 
+            track_company_address_change, 
+            req.company_name, 
+            req.domain, 
+            req.address
+        )
         return {"result": res}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
-    
 
 
 class AIResearchRequest(BaseModel):
