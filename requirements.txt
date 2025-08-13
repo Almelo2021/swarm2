@@ -5,7 +5,7 @@ uvicorn
 pydantic
 requests
 
-googlesearch
+googlesearch-python
 
 # LangGraph and LangChain dependencies
 langgraph
@@ -15,4 +15,5 @@ langchain-tavily
 langchain-openai
 
 bs4
+
 
