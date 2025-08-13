@@ -10,7 +10,7 @@ from pathlib import Path
 # Third‑party
 from openai import OpenAI
 from lister3 import main as extract_companies
-
+from adresapi import track_company_address_change
 # ──────────────────────────────────────────────────────────────────────────────
 #  Local imports & dynamic path handling
 # ──────────────────────────────────────────────────────────────────────────────
@@ -423,7 +423,17 @@ async def process_research_query(req: QueryRequest):
         return {"result": res}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
+
+
+@app.post("/api/adresapi")
+async def process_research_query(req: QueryRequest):
+    try:
+        res = await track_company_address_change(req.company_name, req.domain, req.address)
+        return {"result": res}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Researcher error: {exc}") from exc
     
+
 
 class AIResearchRequest(BaseModel):
     target_url: str
