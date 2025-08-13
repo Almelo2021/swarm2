@@ -7,6 +7,26 @@ import time
 from googlesearch import search
 import re
 
+
+def load_dutch_towns():
+    """Load Dutch towns from JSON file."""
+    with open('dutch_towns.json', 'r', encoding='utf-8') as f:
+        return set(json.load(f))
+
+def contains_dutch_town(text):
+    """Check if text contains any Dutch town names."""
+    towns_set = load_dutch_towns()
+    
+    found_towns = []
+    text_lower = text.lower()
+    
+    for town in towns_set:
+        pattern = r'\b' + re.escape(town.lower()) + r'\b'
+        if re.search(pattern, text_lower):
+            found_towns.append(town)
+    
+    return len(found_towns) > 0
+
 def is_valid_address(address_text):
         """Validate if extracted text is likely a real business address."""
         normalized = address_text.lower().strip()
@@ -52,7 +72,7 @@ def extract_addresses_from_text(text):
             for match in matches:
                 potential_address = match.group(1).strip()
                 if len(potential_address) > 10 and len(potential_address) < 200:  # Reasonable length
-                    if(is_valid_address(potential_address)):
+                    if(is_valid_address(potential_address)) & contains_dutch_town(potential_address):
                         addresses.append(potential_address)
         
         # Look for structured address indicators
@@ -65,7 +85,7 @@ def extract_addresses_from_text(text):
             matches = re.finditer(indicator, text, re.IGNORECASE)
             for match in matches:
                 potential_address = match.group(1).strip()
-                if(is_valid_address(potential_address)):
+                if(is_valid_address(potential_address)) & contains_dutch_town(potential_address):
                         addresses.append(potential_address)
         
         return list(set(addresses))  # Remove duplicates
