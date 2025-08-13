@@ -378,7 +378,7 @@ def track_company_address_change(company_name, domain, address):
             return False
             
         except requests.exceptions.RequestException as e:
-            print(f"Fout bij ophalen van snapshot {wayback_url}: {e}")
+            print(f"Fout bij ophalen van snapshot {timestamp}: {e}")
             return None
 
     # Binary search to find the transition point
@@ -386,34 +386,71 @@ def track_company_address_change(company_name, domain, address):
     left, right = 0, len(snapshots) - 1
     last_no_address = None
     first_with_address = None
+    failed_snapshots = set()  # Track snapshots that consistently fail
+    max_consecutive_errors = 5
+    consecutive_errors = 0
 
     while left <= right:
         mid = (left + right) // 2
         timestamp = snapshots[mid][0]
         
+        # Skip if this snapshot has already failed multiple times
+        if timestamp in failed_snapshots:
+            # Move to adjacent snapshot
+            if mid + 1 <= right:
+                mid = mid + 1
+                timestamp = snapshots[mid][0]
+            elif mid - 1 >= left:
+                mid = mid - 1
+                timestamp = snapshots[mid][0]
+            else:
+                # No more snapshots to try in this range
+                break
+        
         address_present = has_address(timestamp)
         
         if address_present is not None:
             all_results.append((timestamp, address_present))
+            consecutive_errors = 0  # Reset error counter on success
             
         if address_present is None:
-            # On errors, try a few other snapshots linearly
+            consecutive_errors += 1
+            failed_snapshots.add(timestamp)
+            
+            # If we've had too many consecutive errors, exit binary search
+            if consecutive_errors >= max_consecutive_errors:
+                print("Te veel opeenvolgende fouten bij het ophalen van snapshots. Overschakelen naar steekproef methode...")
+                break
+            
+            # Try to find a working snapshot nearby
             continue_search = False
-            for offset in [1, -1, 2, -2]:
+            for offset in [1, -1, 2, -2, 3, -3]:
                 new_idx = mid + offset
                 if 0 <= new_idx < len(snapshots):
                     new_timestamp = snapshots[new_idx][0]
-                    new_result = has_address(new_timestamp)
-                    if new_result is not None:
-                        all_results.append((new_timestamp, new_result))
-                        mid = new_idx
-                        address_present = new_result
-                        continue_search = True
-                        break
+                    if new_timestamp not in failed_snapshots:
+                        new_result = has_address(new_timestamp)
+                        if new_result is not None:
+                            all_results.append((new_timestamp, new_result))
+                            timestamp = new_timestamp
+                            address_present = new_result
+                            consecutive_errors = 0
+                            continue_search = True
+                            break
+                        else:
+                            failed_snapshots.add(new_timestamp)
             
             if not continue_search:
-                print("Te veel fouten bij het ophalen van snapshots. Overschakelen naar lineair zoeken...")
-                break
+                # Skip this range and continue
+                if right - left <= 2:
+                    break
+                else:
+                    # Narrow the search range to avoid this problematic area
+                    if mid - left < right - mid:
+                        left = mid + 1
+                    else:
+                        right = mid - 1
+                    continue
         
         if address_present:
             if first_with_address is None or timestamp < first_with_address:
@@ -460,7 +497,8 @@ def track_company_address_change(company_name, domain, address):
         for idx in sample_indices:
             if idx >= 0 and idx < len(snapshots):
                 timestamp = snapshots[idx][0]
-                if not any(timestamp == t for t, _ in all_results):
+                # Skip if this snapshot has already been analyzed or has failed
+                if not any(timestamp == t for t, _ in all_results) and timestamp not in failed_snapshots:
                     address_present = has_address(timestamp)
                     if address_present is not None:
                         all_results.append((timestamp, address_present))
@@ -469,6 +507,8 @@ def track_company_address_change(company_name, domain, address):
                             first_with_address = timestamp
                         elif not address_present and (last_no_address is None or timestamp > last_no_address):
                             last_no_address = timestamp
+                    else:
+                        failed_snapshots.add(timestamp)
         
         all_results.sort(key=lambda x: x[0])
         
@@ -530,10 +570,10 @@ def track_company_address_change(company_name, domain, address):
 # Example usage:
 if __name__ == "__main__":
     # Example function call
-    company_name = "Flynth"
-    domain = "flynth.nl"
-    address = "Brouwerijstraat 1, 7523 XC Enschede, Netherlands"
-    
+    company_name = "Entweder"
+    domain = "entweder.vc"
+    address = "Brugstraat"
+
     last_no_address_date, first_with_address_date = track_company_address_change(company_name, domain, address)
     
     if last_no_address_date and first_with_address_date:
